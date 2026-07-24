@@ -106,7 +106,7 @@ def render_sidebar() -> dict:
         )
         if selected_provider == "groq":
             st.caption(
-                f"Model ID: `{selected_model}` · Llama 3.3/3.1 migration is complete."
+                f"Model ID: `{selected_model}` · Use discovery to confirm project access."
             )
         use_custom = st.checkbox(
             "Use custom model ID",
@@ -160,6 +160,50 @@ def render_sidebar() -> dict:
                 st.caption(
                     "The selected model has no compatible reasoning-effort control."
                 )
+            if selected_provider == "groq":
+                st.checkbox(
+                    "Automatically switch Groq models on recoverable errors",
+                    value=True,
+                    key="enable_groq_model_fallback",
+                    help=(
+                        "If the selected Groq model is rate-limited, at capacity, "
+                        "unavailable, or rejects model-specific parameters, retry once "
+                        "with another active Groq model."
+                    ),
+                )
+
+        if st.button(
+            "✓ Test current setup",
+            key=f"test_provider_setup_{selected_provider}",
+            width="stretch",
+        ):
+            if not is_api_key_set(selected_provider):
+                st.error("Configure this provider's API key first.")
+            else:
+                try:
+                    active_models = list_provider_models(
+                        selected_provider,
+                        get_api_key(selected_provider),
+                    )
+                    current_model = get_model(selected_provider)
+                    if (
+                        current_model in active_models
+                        or (
+                            selected_provider == "openrouter"
+                            and current_model == "openrouter/free"
+                        )
+                    ):
+                        st.success(
+                            f"Connection passed. `{current_model}` is available to this key."
+                        )
+                    else:
+                        st.error(
+                            f"Connection passed, but `{current_model}` is not in this "
+                            "project's active model list. Discover models and select one "
+                            "that is available."
+                        )
+                except AIClientError as exc:
+                    st.error(str(exc))
 
         with st.expander("Task-based model routing", expanded=False):
             route_tasks = st.checkbox(
@@ -278,6 +322,29 @@ def render_sidebar() -> dict:
         st.caption(
             f"Primary: {PROVIDERS[selected_provider]['label']} / {get_model(selected_provider)}"
         )
+        last_error = st.session_state.get("last_ai_error")
+        if isinstance(last_error, dict):
+            st.error(last_error.get("message", "The last AI request failed."))
+            with st.expander("Last AI error details", expanded=False):
+                st.markdown(
+                    f"**Category:** `{last_error.get('category', 'provider_error')}`  \n"
+                    f"**Provider/model:** `{last_error.get('provider', '')}` / "
+                    f"`{last_error.get('model', '')}`  \n"
+                    f"**Task:** `{last_error.get('task', '')}`  \n"
+                    f"**HTTP status:** `{last_error.get('status_code') or 'not available'}`"
+                )
+                if last_error.get("error_code"):
+                    st.markdown(
+                        f"**Provider code:** `{last_error['error_code']}`"
+                    )
+                if last_error.get("request_id"):
+                    st.markdown(
+                        f"**Request ID:** `{last_error['request_id']}`"
+                    )
+                st.caption(
+                    "No API key, resume text, or job-description content is stored "
+                    "in these diagnostics."
+                )
 
         if st.button("🔄 Reset everything", width="stretch"):
             for key in list(st.session_state.keys()):

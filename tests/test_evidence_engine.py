@@ -1,11 +1,14 @@
 import unittest
 
 from utils.evidence_engine import (
+    allocate_role_bullet_targets,
     achievement_grounding_context,
     build_evidence_ledger,
     build_evidence_matrix,
+    build_safe_evidence_resume,
     compact_grounding_context,
     generate_clarification_questions,
+    repair_grounded_resume_draft,
     strip_generation_annotations,
     validate_achievement_claims,
     validate_generated_claims,
@@ -89,6 +92,62 @@ class EvidenceEngineTests(unittest.TestCase):
         updated_matrix = build_evidence_matrix(JD, updated)
         updated_aws = next(row for row in updated_matrix.rows if "AWS" in row.requirement)
         self.assertNotEqual(updated_aws.status, "missing")
+
+    def test_truth_audit_evidence_can_be_attached_to_exact_source_role(self):
+        updated = build_evidence_ledger(
+            RESUME,
+            {
+                "AUDIT-ROLE001-C001-unsupported_metric": (
+                    "At Acme Ltd, I reduced monthly reconciliation time by 15% "
+                    "using the existing Python and SQL reporting workflow."
+                )
+            },
+        )
+        confirmed = next(
+            item
+            for item in updated.items
+            if item.verification == "user_confirmed"
+        )
+        self.assertEqual(confirmed.role_id, "ROLE001")
+        self.assertEqual(
+            confirmed.role,
+            "Data Analyst | Acme Ltd | 2022 - Present",
+        )
+        self.assertEqual(confirmed.section, "experience")
+        matrix = build_evidence_matrix(JD, updated)
+        plans = allocate_role_bullet_targets(
+            updated,
+            matrix,
+            preferred_per_role=3,
+        )
+        self.assertGreaterEqual(plans[0].available, 3)
+
+    def test_confirmed_metric_can_pass_after_traceable_repair(self):
+        ledger = build_evidence_ledger(
+            RESUME,
+            {
+                "AUDIT-ROLE001-C001-unsupported_metric": (
+                    "At Acme Ltd, I reduced monthly reconciliation time by 15% "
+                    "using Python and SQL."
+                )
+            },
+        )
+        item = next(
+            item for item in ledger.items if item.verification == "user_confirmed"
+        )
+        draft = (
+            "PROFESSIONAL EXPERIENCE\n"
+            "Data Analyst | Acme Ltd | 2022 - Present\n"
+            "- Reduced monthly reconciliation time by 15% using Python and SQL.\n"
+            f'  Evidence: {item.id} — "{item.text}"\n'
+            "  JD Match: none — retained candidate value"
+        )
+        matrix = build_evidence_matrix(JD, ledger)
+        plans = allocate_role_bullet_targets(ledger, matrix, preferred_per_role=3)
+        repaired = repair_grounded_resume_draft(draft, ledger, JD, plans)
+        report = validate_grounded_resume_draft(repaired, ledger, JD)
+        self.assertTrue(report.is_download_safe, report.issues)
+        self.assertIn("15%", strip_generation_annotations(repaired))
 
     def test_compact_context_contains_traceable_ids(self):
         ledger = build_evidence_ledger(RESUME)
@@ -268,6 +327,72 @@ class EvidenceEngineTests(unittest.TestCase):
         self.assertIn("unsupported_role_header", issue_types)
         self.assertIn("unsupported_education_record", issue_types)
         self.assertFalse(report.is_download_safe)
+
+    def test_deterministic_repair_fixes_quotes_mappings_and_role_header(self):
+        ledger = build_evidence_ledger(RESUME)
+        matrix = build_evidence_matrix(JD, ledger)
+        plans = allocate_role_bullet_targets(
+            ledger, matrix, preferred_per_role=3
+        )
+        draft = (
+            "Jane Doe\njane@example.com\n\n"
+            "PROFESSIONAL EXPERIENCE\n"
+            "Senior Data Analyst | Fictional Label | 2022 - Present\n"
+            "- Built Python and SQL reporting pipelines used by 12 analysts.\n"
+            "  Evidence: E999\n"
+            '  JD Match: R002 — "wrong requirement wording"\n'
+            "- Reduced weekly preparation time by 30%.\n"
+        )
+        repaired = repair_grounded_resume_draft(draft, ledger, JD, plans)
+        report = validate_grounded_resume_draft(repaired, ledger, JD)
+        self.assertTrue(report.is_download_safe, report.issues)
+        self.assertIn("Data Analyst | Acme Ltd | 2022 - Present", repaired)
+        self.assertNotIn("Fictional Label", repaired)
+        self.assertIn('Evidence: E003 — "Built Python and SQL', repaired)
+        self.assertIn('JD Match: R001 — "Python and SQL are required"', repaired)
+        self.assertIn("JD Match: none — retained candidate value", repaired)
+
+    def test_role_plan_gives_every_role_a_fair_baseline(self):
+        multi_role_resume = RESUME.replace(
+            "\nEDUCATION",
+            "\nReporting Analyst | Beta Ltd | 2020 - 2022\n"
+            "- Prepared monthly Excel reports.\n"
+            "- Validated operational datasets.\n"
+            "- Documented reporting definitions.\n\nEDUCATION",
+        )
+        ledger = build_evidence_ledger(multi_role_resume)
+        matrix = build_evidence_matrix(JD, ledger)
+        plans = allocate_role_bullet_targets(
+            ledger, matrix, preferred_per_role=2
+        )
+        self.assertEqual(len(plans), 2)
+        self.assertTrue(all(plan.target >= 1 for plan in plans))
+        self.assertLessEqual(max(plan.target for plan in plans), 2)
+        repaired = repair_grounded_resume_draft(
+            (
+                "PROFESSIONAL EXPERIENCE\n"
+                "Data Analyst | Acme Ltd | 2022 - Present\n"
+                "- Built Python and SQL reporting pipelines used by 12 analysts.\n"
+                "Reporting Analyst | Beta Ltd | 2020 - 2022\n"
+                "- Prepared monthly Excel reports.\n"
+            ),
+            ledger,
+            JD,
+            plans,
+        )
+        visible = strip_generation_annotations(repaired)
+        for plan in plans:
+            self.assertIn(plan.role_header, visible)
+
+    def test_safe_recovery_is_downloadable_and_source_only(self):
+        ledger = build_evidence_ledger(RESUME)
+        matrix = build_evidence_matrix(JD, ledger)
+        plans = allocate_role_bullet_targets(ledger, matrix)
+        safe = build_safe_evidence_resume(ledger, JD, plans)
+        report = validate_grounded_resume_draft(safe, ledger, JD)
+        self.assertTrue(report.is_download_safe, report.issues)
+        self.assertIn("Data Analyst | Acme Ltd | 2022 - Present", safe)
+        self.assertNotIn("AWS", strip_generation_annotations(safe))
 
 
 if __name__ == "__main__":

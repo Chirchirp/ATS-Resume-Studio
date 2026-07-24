@@ -17,6 +17,7 @@ from prompts.templates import (
     build_grounded_resume_prompt,
     build_recruiter_prompt,
     build_resume_refinement_prompt,
+    build_truth_audit_repair_prompt,
     get_recruiter_system_prompt,
 )
 from utils.ai_runtime import run_ai, user_safe_ai_error
@@ -25,9 +26,13 @@ from utils.docx_builder import make_docx_from_text, validate_docx_roundtrip
 from utils.domain_profiles import domain_prompt_context, infer_domain_context
 from utils.evidence_engine import (
     ClaimValidationReport,
+    allocate_role_bullet_targets,
     build_evidence_ledger,
     build_evidence_matrix,
+    build_safe_evidence_resume,
     compact_grounding_context,
+    repair_grounded_resume_draft,
+    role_bullet_plan_context,
     strip_generation_annotations,
     validate_achievement_claims,
     validate_generated_claims,
@@ -63,7 +68,10 @@ def _call_ai(
             task=task,
         )
         if result.fallback_used:
-            st.info(f"Primary provider was unavailable; {result.provider} completed this request.")
+            st.info(
+                f"Primary AI route was unavailable; "
+                f"{result.provider} / {result.model} completed this request."
+            )
         return result.text
     except Exception as exc:
         st.error(f"AI request failed: {user_safe_ai_error(exc)}")
@@ -84,6 +92,211 @@ def _validation_findings(report: ClaimValidationReport, limit: int = 16) -> str:
         f"- {issue.claim_id} | {issue.issue_type}: {issue.detail}"
         for issue in report.issues[:limit]
     )
+
+
+EVIDENCE_INPUT_ISSUES = {
+    "unsupported_metric",
+    "unsupported_skill",
+    "unsupported_credential",
+    "document_unsupported_metric",
+    "document_unsupported_skill",
+    "document_unsupported_credential",
+    "unsupported_education_record",
+    "unsupported_certifications_record",
+    "verification_placeholder",
+}
+
+
+def _truth_issue_action(issue_type: str) -> tuple[str, bool]:
+    """Return plain-language repair guidance and whether candidate input can help."""
+    if issue_type in {
+        "missing_evidence_citation",
+        "missing_evidence_id",
+        "unknown_evidence_id",
+        "missing_source_quote",
+        "source_quote_mismatch",
+    }:
+        return (
+            "Automatic fix: rebuild the hidden evidence ID and exact source quotation.",
+            False,
+        )
+    if issue_type in {
+        "missing_jd_mapping",
+        "missing_requirement_id",
+        "unknown_requirement_id",
+        "unsupported_jd_mapping",
+        "requirement_quote_mismatch",
+    }:
+        return (
+            "Automatic fix: recalculate the supported JD mapping and insert the exact "
+            "requirement wording, or mark the bullet as having no supported JD match.",
+            False,
+        )
+    if issue_type == "unsupported_role_header":
+        return (
+            "Automatic fix: restore the exact title, employer, location, and date header "
+            "from the parsed source role.",
+            False,
+        )
+    if issue_type in EVIDENCE_INPUT_ISSUES:
+        return (
+            "Evidence needed: add a factual statement you can personally verify, attach "
+            "it to the correct role, and confirm it. Otherwise AI will remove the claim.",
+            True,
+        )
+    return (
+        "Automatic safe fix: rewrite from supported evidence or remove the unsupported "
+        "fragment if no evidence exists.",
+        False,
+    )
+
+
+def _update_repaired_resume_output(
+    rout: dict,
+    *,
+    annotated_resume: str,
+    ledger,
+    validation: ClaimValidationReport,
+    role_plans,
+    preferred_bullets: int,
+    review_pass: str,
+    issues_before: int,
+) -> None:
+    visible = clean_resume_output(strip_generation_annotations(annotated_resume))
+    achievements = _achievement_examples_from_resume(
+        annotated_resume,
+        sum(plan.target for plan in role_plans) or preferred_bullets,
+    )
+    updated = dict(rout)
+    updated.update(
+        {
+            "resume": visible,
+            "annotated_resume": annotated_resume,
+            "achievements": achievements,
+            "achievement_validation": (
+                validate_achievement_claims(
+                    achievements,
+                    ledger,
+                    st.session_state.get("jd", ""),
+                )
+                if achievements
+                else None
+            ),
+            "validation": validation,
+            "validation_mode": "ai_assisted_truth_repair",
+            "review_pass": review_pass,
+            "source_hash": ledger.source_hash,
+            "role_bullet_plan": role_plans,
+            "truth_repair_summary": {
+                "issues_before": issues_before,
+                "issues_after": len(validation.issues),
+                "download_safe": validation.is_download_safe,
+            },
+        }
+    )
+    st.session_state["premium_resume_output"] = updated
+    st.session_state["ideal_resume"] = visible
+    st.session_state["claim_validation"] = validation
+    st.session_state.pop("truth_audit_resume_text", None)
+
+
+def _run_ai_truth_repair(
+    rout: dict,
+    ledger,
+    *,
+    preferred_bullets: int,
+    prefs: dict,
+) -> bool:
+    """Run AI repair, deterministic normalization, and a guaranteed safe fallback."""
+    if not _api_guard(prefs):
+        return False
+    jd_text = st.session_state.get("jd", "")
+    matrix = build_evidence_matrix(jd_text, ledger)
+    role_plans = allocate_role_bullet_targets(
+        ledger,
+        matrix,
+        preferred_per_role=preferred_bullets,
+    )
+    grounding = compact_grounding_context(ledger, matrix)
+    current_annotated = rout.get("annotated_resume") or repair_grounded_resume_draft(
+        rout.get("resume", ""),
+        ledger,
+        jd_text,
+        role_plans,
+    )
+    current_validation = validate_grounded_resume_draft(
+        current_annotated,
+        ledger,
+        jd_text,
+    )
+    try:
+        prompt = build_truth_audit_repair_prompt(
+            draft=current_annotated,
+            candidate_evidence=grounding,
+            deterministic_findings=_validation_findings(
+                current_validation,
+                limit=30,
+            ),
+            role_bullet_plan=role_bullet_plan_context(role_plans),
+        )
+    except ValueError as exc:
+        st.error(str(exc))
+        return False
+
+    with st.spinner("AI is repairing unsupported claims and rebuilding evidence links…"):
+        ai_draft = clean_resume_output(
+            _call_ai(
+                prompt,
+                system_prompt=RESUME_WRITER_SYSTEM_PROMPT,
+                temperature=0.0,
+                task="resume",
+            )
+        )
+    if not ai_draft:
+        return False
+
+    repaired = repair_grounded_resume_draft(
+        ai_draft,
+        ledger,
+        jd_text,
+        role_plans,
+    )
+    repaired_validation = validate_grounded_resume_draft(
+        repaired,
+        ledger,
+        jd_text,
+    )
+    review_pass = "ai_truth_repair"
+
+    # AI never overrides the audit. If unsafe content remains, use the source-only
+    # deterministic recovery so the user is not trapped behind an opaque block.
+    if not repaired_validation.is_download_safe:
+        safe_version = build_safe_evidence_resume(ledger, jd_text, role_plans)
+        safe_validation = validate_grounded_resume_draft(
+            safe_version,
+            ledger,
+            jd_text,
+        )
+        if safe_validation.is_download_safe:
+            repaired = safe_version
+            repaired_validation = safe_validation
+            review_pass = "ai_truth_repair_safe_fallback"
+
+    _update_repaired_resume_output(
+        rout,
+        annotated_resume=repaired,
+        ledger=ledger,
+        validation=repaired_validation,
+        role_plans=role_plans,
+        preferred_bullets=preferred_bullets,
+        review_pass=review_pass,
+        issues_before=len(current_validation.issues),
+    )
+    log_usage(
+        "repair_resume_truth_audit",
+        status=f"{len(current_validation.issues)}_issues_before",
+    )
+    return True
 
 
 def _achievement_examples_from_resume(
@@ -329,8 +542,14 @@ def _render_resume_gen(prefs: dict):
         with col_a:
             job_title_input = st.text_input("Target Job Title (optional)", key="rg_job_title")
         with col_b:
-            bullets_count = st.select_slider(
-                "Bullets per role", [3, 4, 5, 6, 7], value=prefs["achievements_count"]
+            preferred_bullets = st.select_slider(
+                "Bullet density (auto-balanced per role)",
+                [2, 3, 4, 5, 6],
+                value=max(2, min(6, prefs["achievements_count"])),
+                help=(
+                    "Sets the average target. Every parsed role receives a fair baseline; "
+                    "extra bullets follow available evidence and job relevance."
+                ),
             )
         available_strategies = st.session_state.get("positioning_strategies", [])
         strategy_names = [strategy.name for strategy in available_strategies]
@@ -351,7 +570,93 @@ def _render_resume_gen(prefs: dict):
         )
         submitted = st.form_submit_button("✨ Generate ATS-Optimized Resume", type="primary", width="stretch")
 
-    if submitted:
+    existing_rout = st.session_state.get("premium_resume_output", {})
+    regenerate_requested = False
+    safe_repair_requested = False
+    if existing_rout:
+        st.caption(
+            "Improve the current version or recover a download-safe source-only version "
+            "without decoding audit IDs."
+        )
+        regen_col, repair_col = st.columns(2)
+        with regen_col:
+            regenerate_requested = st.button(
+                "🔁 Regenerate & improve",
+                key="regenerate_resume_improve",
+                type="primary",
+                width="stretch",
+                help=(
+                    "Uses the current version as editorial context, then re-runs grounded "
+                    "generation, deterministic citation repair, and truth audit."
+                ),
+            )
+        with repair_col:
+            safe_repair_requested = st.button(
+                "🛠️ Create safe evidence-only version",
+                key="safe_resume_repair",
+                width="stretch",
+                help=(
+                    "Restores exact source roles, evidence, JD mappings, dates, and records. "
+                    "Use this when an unsupported AI claim is blocking downloads."
+                ),
+            )
+
+    if safe_repair_requested:
+        current_ledger = build_evidence_ledger(
+            st.session_state.get("resume", ""),
+            st.session_state.get("clarification_answers", {}),
+        )
+        current_matrix = build_evidence_matrix(
+            st.session_state.get("jd", ""), current_ledger
+        )
+        role_plans = allocate_role_bullet_targets(
+            current_ledger,
+            current_matrix,
+            preferred_per_role=preferred_bullets,
+        )
+        safe_annotated = build_safe_evidence_resume(
+            current_ledger,
+            st.session_state.get("jd", ""),
+            role_plans,
+        )
+        safe_validation = validate_grounded_resume_draft(
+            safe_annotated,
+            current_ledger,
+            st.session_state.get("jd", ""),
+        )
+        safe_visible = strip_generation_annotations(safe_annotated)
+        safe_achievements = _achievement_examples_from_resume(
+            safe_annotated,
+            sum(plan.target for plan in role_plans) or preferred_bullets,
+        )
+        updated = dict(existing_rout)
+        updated.update(
+            {
+                "resume": safe_visible,
+                "annotated_resume": safe_annotated,
+                "achievements": safe_achievements,
+                "achievement_validation": (
+                    validate_achievement_claims(
+                        safe_achievements,
+                        current_ledger,
+                        st.session_state.get("jd", ""),
+                    )
+                    if safe_achievements
+                    else None
+                ),
+                "validation": safe_validation,
+                "validation_mode": "deterministic_safe_recovery",
+                "review_pass": "safe_evidence_recovery",
+                "source_hash": current_ledger.source_hash,
+                "role_bullet_plan": role_plans,
+            }
+        )
+        st.session_state["premium_resume_output"] = updated
+        st.session_state["ideal_resume"] = safe_visible
+        st.session_state.pop("truth_audit_resume_text", None)
+        st.rerun()
+
+    if submitted or regenerate_requested:
         if not _api_guard(prefs):
             return
         if not jd_ok:
@@ -371,6 +676,11 @@ def _render_resume_gen(prefs: dict):
             user_resume, st.session_state.get("clarification_answers", {})
         )
         matrix = build_evidence_matrix(st.session_state["jd"], ledger)
+        role_plans = allocate_role_bullet_targets(
+            ledger,
+            matrix,
+            preferred_per_role=preferred_bullets,
+        )
         grounding = compact_grounding_context(ledger, matrix)
         domain = infer_domain_context(st.session_state["jd"] + "\n" + user_resume)
         strategies = available_strategies or build_positioning_strategies(
@@ -419,6 +729,12 @@ def _render_resume_gen(prefs: dict):
                     job_description=st.session_state["jd"],
                     candidate_evidence=grounding,
                     strategy_context=strategy_context,
+                    role_bullet_plan=role_bullet_plan_context(role_plans),
+                    previous_draft=(
+                        existing_rout.get("annotated_resume", "")
+                        if regenerate_requested
+                        else ""
+                    ),
                 )
             except ValueError as exc:
                 st.error(str(exc))
@@ -433,6 +749,12 @@ def _render_resume_gen(prefs: dict):
             )
         if not resume_draft:
             return
+        resume_draft = repair_grounded_resume_draft(
+            resume_draft,
+            ledger,
+            st.session_state["jd"],
+            role_plans,
+        )
         first_validation = validate_grounded_resume_draft(
             resume_draft, ledger, st.session_state["jd"]
         )
@@ -454,6 +776,12 @@ def _render_resume_gen(prefs: dict):
                     )
                 )
             if reviewed_draft:
+                reviewed_draft = repair_grounded_resume_draft(
+                    reviewed_draft,
+                    ledger,
+                    st.session_state["jd"],
+                    role_plans,
+                )
                 reviewed_validation = validate_grounded_resume_draft(
                     reviewed_draft, ledger, st.session_state["jd"]
                 )
@@ -466,7 +794,7 @@ def _render_resume_gen(prefs: dict):
                 else:
                     review_pass = "two_pass_rejected_unsafe_revision"
         achievements = _achievement_examples_from_resume(
-            resume_draft, bullets_count
+            resume_draft, sum(plan.target for plan in role_plans) or preferred_bullets
         )
         achievement_validation = (
             validate_achievement_claims(
@@ -491,6 +819,7 @@ def _render_resume_gen(prefs: dict):
             "achievements": achievements,
             "achievement_validation": achievement_validation,
             "resume": ideal_resume,
+            "annotated_resume": resume_draft,
             "used_resume": True,
             "candidate_name": alignment.resume.candidate_name,
             "validation": validation,
@@ -500,8 +829,10 @@ def _render_resume_gen(prefs: dict):
             "strategy_id": selected_strategy.id,
             "strategy_name": selected_strategy.name,
             "domain": domain.profile.label,
+            "role_bullet_plan": role_plans,
         }
         st.session_state["ideal_resume"] = ideal_resume
+        st.session_state.pop("truth_audit_resume_text", None)
         log_usage("generate_resume", fields=fields_str, job_title=job_title)
 
     # Show results
@@ -519,8 +850,25 @@ def _render_resume_gen(prefs: dict):
         ):
             validation = existing_validation
         else:
-            validation = validate_generated_claims(
-                rout.get("resume", ""),
+            annotated_resume = rout.get("annotated_resume", "")
+            if not annotated_resume and not source_changed:
+                current_matrix = build_evidence_matrix(
+                    st.session_state.get("jd", ""), current_ledger
+                )
+                role_plans = allocate_role_bullet_targets(
+                    current_ledger,
+                    current_matrix,
+                    preferred_per_role=preferred_bullets,
+                )
+                annotated_resume = repair_grounded_resume_draft(
+                    rout.get("resume", ""),
+                    current_ledger,
+                    st.session_state.get("jd", ""),
+                    role_plans,
+                )
+                rout["annotated_resume"] = annotated_resume
+            validation = validate_grounded_resume_draft(
+                annotated_resume or rout.get("resume", ""),
                 current_ledger,
                 st.session_state.get("jd", ""),
             )
@@ -549,6 +897,35 @@ def _render_resume_gen(prefs: dict):
                 "The second-pass revision scored worse in the deterministic truth audit, "
                 "so the safer first draft was retained."
             )
+        elif rout.get("review_pass") == "safe_evidence_recovery":
+            st.success(
+                "Safe recovery applied: wording, role headers, records, citations, and "
+                "JD mappings now come directly from verified candidate evidence."
+            )
+        elif rout.get("review_pass") == "ai_truth_repair":
+            st.success(
+                "AI-assisted truth repair completed and passed the deterministic audit."
+            )
+        elif rout.get("review_pass") == "ai_truth_repair_safe_fallback":
+            st.success(
+                "AI repair was completed. A few unsupported statements remained, so the "
+                "app automatically used the verified evidence-only recovery to unlock "
+                "downloads safely."
+            )
+        repair_summary = rout.get("truth_repair_summary")
+        if isinstance(repair_summary, dict):
+            st.caption(
+                f"Truth repair: {repair_summary.get('issues_before', 0)} issue(s) before · "
+                f"{repair_summary.get('issues_after', 0)} after."
+            )
+        role_plan = rout.get("role_bullet_plan", ())
+        if role_plan:
+            st.caption(
+                "Fair role coverage: "
+                + " · ".join(
+                    f"{plan.role_header} ({plan.target})" for plan in role_plan
+                )
+            )
         if isinstance(validation, ClaimValidationReport):
             if source_changed:
                 st.error(
@@ -562,14 +939,20 @@ def _render_resume_gen(prefs: dict):
                 )
             else:
                 st.error(
-                    "Truth audit found unsupported claims. Downloads are disabled until the "
-                    "document is regenerated or the underlying evidence is verified."
+                    "Truth audit found unsupported claims. Use **Regenerate & improve** to "
+                    "rewrite them, or **Create safe evidence-only version** to restore a "
+                    "downloadable version immediately."
                 )
                 with st.expander("View truth-audit issues", expanded=True):
                     for issue in validation.issues:
                         st.markdown(
                             f"- **{issue.claim_id} · {issue.issue_type}:** {issue.detail}"
                         )
+                    st.caption(
+                        "Citation, JD quote, mapping, and role-header codes are repaired "
+                        "automatically. A remaining metric, skill, credential, education, "
+                        "or date issue means the wording is not present in your source resume."
+                    )
 
         tabs = st.tabs(
             ["📄 Resume Preview", "💡 Achievement Examples", "🛡️ Truth Audit & Edit"]
@@ -578,7 +961,9 @@ def _render_resume_gen(prefs: dict):
             formatted = format_resume_for_display(rout.get("resume", ""))
             st.markdown(
                 '<div style="background:white; padding:28px 32px; border-radius:10px; '
-                'border:1px solid #e0e0e0; font-family:Georgia,serif; line-height:1.7;">',
+                'border:1px solid #d8e1ea; border-top:4px solid #1b7f79; '
+                'box-shadow:0 8px 24px rgba(23,54,93,.08); color:#263645; '
+                'font-family:Arial,sans-serif; line-height:1.55;">',
                 unsafe_allow_html=True,
             )
             st.markdown(formatted)
@@ -612,8 +997,176 @@ def _render_resume_gen(prefs: dict):
 
         with tabs[2]:
             st.caption(
-                "Edit unsupported statements or add verified evidence in the Evidence & Truth tab, then re-audit."
+                "Edit the visible wording below. The app will rebuild hidden citations, "
+                "exact JD quotations, and source role headers before re-auditing."
             )
+            if (
+                isinstance(validation, ClaimValidationReport)
+                and not validation.is_download_safe
+                and not source_changed
+            ):
+                st.markdown("#### 🤖 Guided truth repair")
+                st.write(
+                    "AI can repair supported wording and remove claims that cannot be "
+                    "verified. The deterministic audit—not the AI—still controls downloads."
+                )
+                if st.button(
+                    "Fix all current issues with AI",
+                    key="ai_truth_repair_all",
+                    type="primary",
+                    width="stretch",
+                ):
+                    if _run_ai_truth_repair(
+                        rout,
+                        current_ledger,
+                        preferred_bullets=preferred_bullets,
+                        prefs=prefs,
+                    ):
+                        st.rerun()
+
+                evidence_claims = {}
+                with st.expander("Issue-by-issue repair checklist", expanded=True):
+                    for issue in validation.issues:
+                        action, needs_evidence = _truth_issue_action(
+                            issue.issue_type
+                        )
+                        st.markdown(
+                            f"**{issue.claim_id} · {issue.issue_type}**  \n"
+                            f"{issue.detail}  \n"
+                            f"_{action}_"
+                        )
+                        if needs_evidence:
+                            evidence_claims.setdefault(issue.claim_id, issue)
+
+                if evidence_claims:
+                    st.markdown("##### Add missing verified evidence")
+                    st.caption(
+                        "Only add facts you can defend in an interview or reference check. "
+                        "Confirmed evidence becomes part of this application session and is "
+                        "attached to the selected source role."
+                    )
+                    roles = (
+                        list(current_ledger.profile.roles)
+                        if current_ledger.profile
+                        else []
+                    )
+                    role_options = [role.id for role in roles] or [""]
+                    role_labels = {
+                        role.id: role.header for role in roles
+                    } | {"": "General candidate evidence"}
+                    with st.form("truth_audit_evidence_form"):
+                        evidence_inputs = {}
+                        for claim_id, issue in evidence_claims.items():
+                            st.markdown(
+                                f"**{claim_id}: {issue.issue_type}**"
+                            )
+                            st.caption(issue.claim[:350])
+                            selected_role_id = st.selectbox(
+                                f"Attach {claim_id} evidence to role",
+                                role_options,
+                                format_func=lambda value: role_labels[value],
+                                key=f"audit_evidence_role_{claim_id}",
+                            )
+                            evidence_text = st.text_area(
+                                f"Verified evidence for {claim_id}",
+                                key=f"audit_evidence_text_{claim_id}",
+                                placeholder=(
+                                    "State where and when this happened, what you personally "
+                                    "did, the tool or skill used, and the exact measured "
+                                    "outcome if one exists."
+                                ),
+                                height=110,
+                            )
+                            confirmed = st.checkbox(
+                                "I confirm this statement is accurate and can be defended.",
+                                key=f"audit_evidence_confirm_{claim_id}",
+                            )
+                            evidence_inputs[claim_id] = (
+                                issue,
+                                selected_role_id,
+                                evidence_text,
+                                confirmed,
+                            )
+                        save_evidence = st.form_submit_button(
+                            "Save verified evidence & run AI repair",
+                            type="primary",
+                            width="stretch",
+                        )
+                    if save_evidence:
+                        errors = []
+                        additions = {}
+                        for claim_id, (
+                            issue,
+                            role_id,
+                            evidence_text,
+                            confirmed,
+                        ) in evidence_inputs.items():
+                            clean_evidence = re.sub(
+                                r"\s+", " ", evidence_text
+                            ).strip()
+                            if not clean_evidence:
+                                continue
+                            if not confirmed:
+                                errors.append(
+                                    f"{claim_id}: confirm the evidence before saving."
+                                )
+                                continue
+                            if len(clean_evidence.split()) < 6:
+                                errors.append(
+                                    f"{claim_id}: add a more specific statement with at "
+                                    "least the role/context and action."
+                                )
+                                continue
+                            if "metric" in issue.issue_type:
+                                unsupported_numbers = re.findall(
+                                    r"(?:[$£€]\s*)?\d[\d,.]*(?:\s?%|\+)?",
+                                    issue.detail + " " + issue.claim,
+                                )
+                                if (
+                                    unsupported_numbers
+                                    and not any(
+                                        number.strip() in clean_evidence
+                                        for number in unsupported_numbers
+                                    )
+                                ):
+                                    errors.append(
+                                        f"{claim_id}: include the exact metric being "
+                                        "verified or leave this field blank so AI removes it."
+                                    )
+                                    continue
+                            evidence_key = (
+                                f"AUDIT-{role_id or 'GENERAL'}-{claim_id}-"
+                                f"{issue.issue_type}"
+                            )
+                            additions[evidence_key] = clean_evidence
+                        if errors:
+                            for message in errors:
+                                st.error(message)
+                        elif not additions:
+                            st.error(
+                                "Add and confirm at least one evidence statement, or use "
+                                "**Fix all current issues with AI** to remove unsupported claims."
+                            )
+                        else:
+                            answers = dict(
+                                st.session_state.get(
+                                    "clarification_answers", {}
+                                )
+                            )
+                            answers.update(additions)
+                            st.session_state["clarification_answers"] = answers
+                            updated_ledger = build_evidence_ledger(
+                                st.session_state.get("resume", ""),
+                                answers,
+                            )
+                            if _run_ai_truth_repair(
+                                rout,
+                                updated_ledger,
+                                preferred_bullets=preferred_bullets,
+                                prefs=prefs,
+                            ):
+                                st.rerun()
+
             with st.form("truth_audit_editor"):
                 edited_resume = st.text_area(
                     "Editable optimized resume",
@@ -628,18 +1181,49 @@ def _render_resume_gen(prefs: dict):
                 )
             if apply_edit:
                 edited_resume = clean_resume_output(edited_resume)
-                edited_validation = validate_generated_claims(
+                current_matrix = build_evidence_matrix(
+                    st.session_state.get("jd", ""), current_ledger
+                )
+                role_plans = allocate_role_bullet_targets(
+                    current_ledger,
+                    current_matrix,
+                    preferred_per_role=preferred_bullets,
+                )
+                edited_annotated = repair_grounded_resume_draft(
                     edited_resume,
                     current_ledger,
                     st.session_state.get("jd", ""),
+                    role_plans,
+                )
+                edited_validation = validate_grounded_resume_draft(
+                    edited_annotated,
+                    current_ledger,
+                    st.session_state.get("jd", ""),
+                )
+                edited_visible = strip_generation_annotations(edited_annotated)
+                edited_achievements = _achievement_examples_from_resume(
+                    edited_annotated,
+                    sum(plan.target for plan in role_plans) or preferred_bullets,
                 )
                 updated = dict(rout)
-                updated["resume"] = edited_resume
+                updated["resume"] = edited_visible
+                updated["annotated_resume"] = edited_annotated
+                updated["achievements"] = edited_achievements
+                updated["achievement_validation"] = (
+                    validate_achievement_claims(
+                        edited_achievements,
+                        current_ledger,
+                        st.session_state.get("jd", ""),
+                    )
+                    if edited_achievements
+                    else None
+                )
                 updated["validation"] = edited_validation
-                updated["validation_mode"] = "manual_edit"
+                updated["validation_mode"] = "manual_edit_with_deterministic_repair"
                 updated["source_hash"] = current_ledger.source_hash
+                updated["role_bullet_plan"] = role_plans
                 st.session_state["premium_resume_output"] = updated
-                st.session_state["ideal_resume"] = edited_resume
+                st.session_state["ideal_resume"] = edited_visible
                 st.session_state["claim_validation"] = edited_validation
                 st.rerun()
 

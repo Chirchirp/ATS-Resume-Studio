@@ -56,7 +56,10 @@ def _call_ai(
             task=task,
         )
         if result.fallback_used:
-            st.info(f"Primary provider was unavailable; {result.provider} completed this request.")
+            st.info(
+                f"Primary AI route was unavailable; "
+                f"{result.provider} / {result.model} completed this request."
+            )
         return result.text
     except Exception as exc:
         st.error(f"AI request failed: {user_safe_ai_error(exc)}")
