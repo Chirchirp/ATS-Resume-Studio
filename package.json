@@ -1,0 +1,19 @@
+{
+  "name": "modern-resume-ai-agent-cloudflare-worker",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Cloudflare Worker deployment for the ATS Resume Studio wrapper.",
+  "type": "module",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "node cloudflare-wrapper/build.mjs --output-directory=dist",
+    "check": "node cloudflare-wrapper/build.mjs --check",
+    "deploy": "wrangler deploy",
+    "preview": "wrangler versions upload"
+  },
+  "devDependencies": {
+    "wrangler": "4.114.0"
+  }
+}

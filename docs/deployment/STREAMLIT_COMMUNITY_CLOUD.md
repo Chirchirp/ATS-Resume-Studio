@@ -47,7 +47,7 @@ without a code change. Leave them blank to retain the built-in account.
    provider secrets.
 5. Choose a stable `streamlit.app` subdomain and deploy.
 6. Record the final public URL. It becomes `STREAMLIT_APP_URL` for the Cloudflare
-   Pages wrapper.
+   Worker wrapper.
 
 ## Smoke-test checklist
 

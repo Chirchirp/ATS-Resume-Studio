@@ -47,3 +47,17 @@ def test_cloudflare_wrapper_requires_runtime_streamlit_url():
     assert "STREAMLIT_APP_URL is required" in build_script
     assert "https://*.streamlit.app" in headers
     assert "cloudflare-wrapper/dist/" in gitignore
+
+
+def test_cloudflare_worker_builds_from_repository_root():
+    package = (ROOT / "package.json").read_text(encoding="utf-8")
+    wrangler = (ROOT / "wrangler.jsonc").read_text(encoding="utf-8")
+    worker = (ROOT / "cloudflare-worker.mjs").read_text(encoding="utf-8")
+
+    assert "--output-directory=dist" in package
+    assert '"wrangler": "4.114.0"' in package
+    assert '"name": "modern-resume-ai-agent"' in wrangler
+    assert '"directory": "./dist"' in wrangler
+    assert '"binding": "ASSETS"' in wrangler
+    assert "Content-Security-Policy" in worker
+    assert "environment.ASSETS.fetch(request)" in worker
