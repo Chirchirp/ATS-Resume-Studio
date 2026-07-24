@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.streamlit/secrets.toml
+.env
+.env.*
+!.env.example
+usage_logs.csv
+data/
+*.db
+*.db-shm
+*.db-wal
+cloudflare-wrapper/dist/

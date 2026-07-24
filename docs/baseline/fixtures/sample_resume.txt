@@ -1,0 +1,23 @@
+ALEX MORGAN
+Nairobi, Kenya | alex.morgan@example.com | +254 700 000 000
+
+PROFESSIONAL SUMMARY
+Data Analyst with 5 years of experience supporting agricultural operations through SQL, Excel, Power BI, Smartsheet, data validation, and stakeholder reporting.
+
+EXPERIENCE
+Data Analyst | GreenFields Agriculture | January 2022 – Present
+- Built SQL and Power BI reporting workflows used by operations and R&D stakeholders.
+- Automated weekly Excel reporting, reducing preparation time from 8 hours to 3 hours.
+- Validated production datasets and documented data definitions and quality checks.
+- Trained 25 end-users on dashboards, Smartsheet workflows, and analytical outputs.
+
+Agricultural Data Assistant | Harvest Research Centre | March 2019 – December 2021
+- Cleaned field-trial and production data using Excel and SQL.
+- Prepared management update reports with trends, risks, and recommended actions.
+- Worked with agronomy, production, and external research partners.
+
+EDUCATION
+Diploma in Agriculture | Kenya Agricultural College | 2018
+
+SKILLS
+SQL, Microsoft Excel, Power BI, Smartsheet, data cleaning, data validation, stakeholder engagement, dashboard training, HSE compliance

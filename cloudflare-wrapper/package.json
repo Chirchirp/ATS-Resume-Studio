@@ -1,0 +1,14 @@
+{
+  "name": "ats-resume-studio-cloudflare-wrapper",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Static Cloudflare Pages shell for the Streamlit ATS Resume Studio.",
+  "type": "module",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "node build.mjs",
+    "check": "node build.mjs --check"
+  }
+}

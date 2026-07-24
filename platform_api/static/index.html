@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Evidence-grounded resume workspace for verified, role-specific applications.">
+  <title>ATS Resume Studio — Platform</title>
+  <link rel="stylesheet" href="/assets/styles.css">
+</head>
+<body>
+  <main id="auth-view" class="auth-shell">
+    <section class="auth-copy">
+      <p class="eyebrow">ATS Resume Studio</p>
+      <h1>Build applications from evidence, not invention.</h1>
+      <p class="lede">A private workspace for job alignment, versioned documents, and claim-level integrity.</p>
+      <div class="proof-grid">
+        <article><strong>Encrypted</strong><span>Documents are protected before storage.</span></article>
+        <article><strong>Traceable</strong><span>Versions stay connected to each application.</span></article>
+        <article><strong>Explainable</strong><span>Alignment is broken into observable dimensions.</span></article>
+      </div>
+    </section>
+    <section class="auth-card" aria-labelledby="auth-heading">
+      <p class="eyebrow">Secure workspace</p>
+      <h2 id="auth-heading">Sign in</h2>
+      <form id="auth-form">
+        <label>Email<input id="auth-email" type="email" autocomplete="email" required></label>
+        <label>Password<input id="auth-password" type="password" minlength="10" autocomplete="current-password" required></label>
+        <button class="primary" type="submit">Continue</button>
+      </form>
+      <button id="auth-mode" class="text-button" type="button">Create a new account</button>
+      <p id="auth-message" class="message" role="status"></p>
+    </section>
+  </main>
+
+  <main id="studio-view" class="studio-shell" hidden>
+    <aside class="sidebar">
+      <div class="brand-row">
+        <div class="brand-mark">AR</div>
+        <div><strong>ATS Resume Studio</strong><span>Application workspace</span></div>
+      </div>
+      <button id="new-application" class="primary full" type="button">New application</button>
+      <nav aria-label="Saved applications">
+        <p class="nav-label">Applications</p>
+        <div id="application-list" class="application-list"></div>
+      </nav>
+      <div class="sidebar-footer">
+        <button id="privacy-button" class="secondary full" type="button">Privacy & retention</button>
+        <button id="sign-out" class="text-button" type="button">Sign out</button>
+      </div>
+    </aside>
+
+    <section class="workspace">
+      <header class="workspace-header">
+        <div>
+          <p class="eyebrow">Evidence workspace</p>
+          <h1 id="workspace-title">New application</h1>
+        </div>
+        <div class="header-actions">
+          <span id="save-state" class="save-state">Not saved</span>
+          <button id="save-application" class="secondary" type="button">Save application</button>
+          <button id="run-analysis" class="primary" type="button">Run alignment</button>
+        </div>
+      </header>
+
+      <div class="workspace-grid">
+        <section class="editor-card">
+          <div class="field-row">
+            <label>Company<input id="company" maxlength="200" placeholder="Organization"></label>
+            <label>Target role<input id="role" maxlength="200" placeholder="Data Analyst"></label>
+            <label>Status
+              <select id="application-status">
+                <option value="draft">Draft</option>
+                <option value="applied">Applied</option>
+                <option value="screening">Screening</option>
+                <option value="interview">Interview</option>
+                <option value="offer">Offer</option>
+                <option value="rejected">Rejected</option>
+                <option value="withdrawn">Withdrawn</option>
+              </select>
+            </label>
+          </div>
+          <div class="document-tabs" role="tablist">
+            <button class="doc-tab active" data-document="resume" type="button">Resume</button>
+            <button class="doc-tab" data-document="job" type="button">Job description</button>
+          </div>
+          <label class="editor-label" for="document-editor">Document editor</label>
+          <textarea id="document-editor" spellcheck="true" aria-label="Document editor"></textarea>
+          <div class="editor-footer">
+            <span id="editor-stats">0 words</span>
+            <div>
+              <input id="version-label" maxlength="200" placeholder="Version label" aria-label="Version label">
+              <button id="save-version" class="secondary" type="button">Save version</button>
+            </div>
+          </div>
+        </section>
+
+        <aside class="insight-panel">
+          <div class="score-card">
+            <span>Job alignment</span>
+            <strong id="alignment-score">—</strong>
+            <small id="alignment-confidence">Run analysis to calculate</small>
+          </div>
+          <section>
+            <div class="panel-heading">
+              <h2>Score dimensions</h2>
+              <span id="job-status" class="status-pill">Idle</span>
+            </div>
+            <div id="dimension-list" class="dimension-list">
+              <p class="empty-state">Your explainable score will appear here.</p>
+            </div>
+          </section>
+          <section>
+            <h2>Requirement gaps</h2>
+            <ul id="gap-list" class="gap-list">
+              <li class="empty-state">No analysis yet.</li>
+            </ul>
+          </section>
+          <section>
+            <div class="panel-heading">
+              <h2>Saved versions</h2>
+              <span id="version-count">0</span>
+            </div>
+            <div id="version-list" class="version-list"></div>
+          </section>
+        </aside>
+      </div>
+    </section>
+  </main>
+
+  <dialog id="privacy-dialog">
+    <form method="dialog" class="dialog-card">
+      <div class="panel-heading">
+        <div><p class="eyebrow">Account controls</p><h2>Privacy & retention</h2></div>
+        <button class="icon-button" value="cancel" aria-label="Close">×</button>
+      </div>
+      <label>Automatic job-result retention
+        <select id="retention-days">
+          <option value="30">30 days</option>
+          <option value="90" selected>90 days</option>
+          <option value="180">180 days</option>
+          <option value="365">1 year</option>
+        </select>
+      </label>
+      <button id="save-retention" class="secondary" type="button">Update retention</button>
+      <button id="export-data" class="secondary" type="button">Export my data</button>
+      <hr>
+      <h3>Delete account</h3>
+      <p>This permanently deletes your profile, applications, document versions, and jobs.</p>
+      <label>Confirm password<input id="delete-password" type="password" autocomplete="current-password"></label>
+      <label>Type DELETE MY ACCOUNT<input id="delete-confirmation"></label>
+      <button id="delete-account" class="danger" type="button">Delete account permanently</button>
+      <p id="privacy-message" class="message" role="status"></p>
+    </form>
+  </dialog>
+
+  <script src="/assets/app.js" defer></script>
+</body>
+</html>

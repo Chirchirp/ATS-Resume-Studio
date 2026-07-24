@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta
+      name="description"
+      content="ATS Resume Studio — evidence-grounded resume analysis and optimization."
+    >
+    <meta name="theme-color" content="#07111f">
+    <title>ATS Resume Studio</title>
+    <link rel="stylesheet" href="./styles.css">
+    <script src="./config.js" defer></script>
+    <script src="./app.js" defer></script>
+  </head>
+  <body>
+    <main class="app-stage" data-state="starting">
+      <section
+        class="wake-screen"
+        aria-labelledby="wake-title"
+        aria-describedby="wake-description wake-progress"
+        role="status"
+        aria-live="polite"
+      >
+        <div class="wake-content">
+          <div class="resume-orbit" aria-hidden="true">
+            <span class="orbit orbit-one"></span>
+            <span class="orbit orbit-two"></span>
+            <span class="orbit orbit-three"></span>
+            <span class="orbit-node node-one"></span>
+            <span class="orbit-node node-two"></span>
+
+            <div class="document-card card-left">
+              <span></span><span></span><span></span><span></span>
+            </div>
+
+            <div class="ats-core">
+              <span class="core-label">ATS</span>
+              <span class="core-pulse"></span>
+            </div>
+
+            <div class="document-card card-right">
+              <span></span><span></span><span></span><span></span>
+            </div>
+
+            <div class="signal-bars">
+              <span></span><span></span><span></span><span></span><span></span>
+            </div>
+          </div>
+
+          <div class="wake-copy">
+            <p class="eyebrow">Resume intelligence workspace</p>
+            <h1 id="wake-title">Starting ATS Resume Studio</h1>
+            <p id="wake-description" class="wake-description">Application paused due to inactivity. click “Get this app back up.” Initial startup may take a short time.</p>
+            <div class="progress-track" aria-hidden="true">
+              <span></span>
+            </div>
+            <p id="wake-progress" class="wake-progress">Preparing your workspace…</p>
+            <a
+              id="direct-link"
+              class="direct-link"
+              href="#"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              Open the app directly
+            </a>
+          </div>
+        </div>
+      </section>
+
+      <section class="studio-frame" aria-label="ATS Resume Studio application">
+        <iframe
+          id="studio-frame"
+          title="ATS Resume Studio"
+          allow="clipboard-read; clipboard-write"
+          referrerpolicy="strict-origin-when-cross-origin"
+        ></iframe>
+      </section>
+
+      <section class="configuration-error" role="alert" hidden>
+        <p class="eyebrow">Configuration required</p>
+        <h1>ATS Resume Studio could not start</h1>
+        <p id="configuration-message"></p>
+      </section>
+    </main>
+
+    <noscript>
+      <p class="noscript-message">
+        JavaScript is required to open ATS Resume Studio from this page.
+      </p>
+    </noscript>
+  </body>
+</html>

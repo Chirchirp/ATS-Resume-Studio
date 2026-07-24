@@ -1,0 +1,58 @@
+{
+  "alignment": {
+    "score": 52,
+    "confidence": "High",
+    "matched_term_count": 10,
+    "matched_terms": [
+      "analyze",
+      "data cleaning",
+      "excel",
+      "external",
+      "partners",
+      "production",
+      "r",
+      "smartsheet",
+      "smartsheet data",
+      "sql"
+    ],
+    "missing_required_count": 7,
+    "missing_preferred_count": 0,
+    "knockout_risk_count": 5,
+    "dimension_labels": [
+      "Required qualifications",
+      "Preferred qualifications",
+      "Skills and phrase alignment",
+      "Relevant responsibilities",
+      "Experience and seniority",
+      "Achievement evidence",
+      "Source-text parseability",
+      "Keyword placement"
+    ],
+    "resume_profile": {
+      "roles": 2,
+      "role_bullets": 7,
+      "declared_skills": 9,
+      "has_contact": true
+    }
+  },
+  "resume_quality": {
+    "score": 95,
+    "grade": "Excellent",
+    "word_count": 150,
+    "detected_sections": [
+      "summary",
+      "experience",
+      "education",
+      "skills"
+    ],
+    "dimension_scores": {
+      "Structure & hierarchy": 25,
+      "Grammar & bullet style": 25,
+      "Dates & chronology": 25,
+      "ATS readability": 20
+    },
+    "issue_count": 1,
+    "high_priority_issue_count": 0,
+    "date_range_count": 2
+  }
+}
