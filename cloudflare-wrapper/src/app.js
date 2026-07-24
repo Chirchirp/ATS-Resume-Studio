@@ -30,7 +30,7 @@ function buildEmbedUrl(value) {
 function startStudio() {
   if (!configuration || !configuration.streamlitUrl) {
     showConfigurationError(
-      "The Cloudflare Pages build is missing STREAMLIT_APP_URL."
+      "The Cloudflare build is missing STREAMLIT_APP_URL."
     );
     return;
   }

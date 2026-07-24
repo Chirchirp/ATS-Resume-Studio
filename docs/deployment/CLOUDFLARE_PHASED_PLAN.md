@@ -1,9 +1,9 @@
 # Streamlit + Cloudflare phased rollout
 
 Yes, this migration should be phased. Streamlit Community Cloud remains the
-Python application host; Cloudflare Pages provides the branded subdomain and
-wake-up shell. This avoids rewriting the working application while the budget is
-zero.
+Python application host; a Cloudflare Worker with Static Assets provides the
+branded subdomain and wake-up shell. This avoids rewriting the working
+application while the budget is zero.
 
 ## Phase 0 — Freeze and baseline
 
@@ -38,15 +38,17 @@ Exit gate: clean GitHub checkout installs successfully, tests pass, and
 Exit gate: all current features work directly on the public Streamlit URL,
 including AI calls and DOCX downloads.
 
-## Phase 3 — Cloudflare Pages wrapper
+## Phase 3 — Cloudflare Worker wrapper
 
 Status: source implementation complete; final URL and deployment remain.
 
-- Create a Cloudflare Pages project from the same GitHub repository.
-- Set root directory to `cloudflare-wrapper`.
-- Set build command to `npm run build` and output directory to `dist`.
+- Connect the `modern-resume-ai-agent` Worker to the same GitHub repository.
+- Set the build path to `/`.
+- Set the build command to `npm run build`.
+- Keep the production deploy command as `npx wrangler deploy`.
+- Keep the non-production deploy command as `npx wrangler versions upload`.
 - Set `STREAMLIT_APP_URL` to the Phase 2 public URL.
-- Deploy the wake-up animation and embedded Streamlit app.
+- Deploy the `/dist` static assets configured by `wrangler.jsonc`.
 - Add the custom domain `resume.pharaohchirchir.com`.
 
 Exit gate: the Cloudflare URL shows the requested cold-boot copy and then exposes

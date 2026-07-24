@@ -56,14 +56,14 @@ streamlit run app.py
 ## Free deployment
 
 The zero-budget production path keeps the complete application on Streamlit
-Community Cloud and uses Cloudflare Pages only for the branded
+Community Cloud and uses a Cloudflare Worker with Static Assets for the branded
 `resume.pharaohchirchir.com` shell:
 
 1. Deploy `app.py` from GitHub to Streamlit Community Cloud with Python 3.11.
 2. Add provider keys through Streamlit Advanced settings, never Git.
-3. Deploy `cloudflare-wrapper` to Cloudflare Pages and set
+3. Connect the repository to the `modern-resume-ai-agent` Cloudflare Worker and set
    `STREAMLIT_APP_URL` to the public `*.streamlit.app` URL.
-4. Attach `resume.pharaohchirchir.com` to the Pages project.
+4. Attach `resume.pharaohchirchir.com` to the Worker.
 
 See [the Streamlit deployment guide](docs/deployment/STREAMLIT_COMMUNITY_CLOUD.md)
 and [the phased Cloudflare plan](docs/deployment/CLOUDFLARE_PHASED_PLAN.md).

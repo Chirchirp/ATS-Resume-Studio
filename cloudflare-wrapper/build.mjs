@@ -4,10 +4,35 @@ import process from "node:process";
 import { fileURLToPath } from "node:url";
 
 const wrapperDirectory = path.dirname(fileURLToPath(import.meta.url));
+const repositoryDirectory = path.resolve(wrapperDirectory, "..");
 const sourceDirectory = path.resolve(wrapperDirectory, "src");
-const outputDirectory = path.resolve(wrapperDirectory, "dist");
 const checkOnly = process.argv.includes("--check");
+const outputArgument = process.argv.find((argument) =>
+  argument.startsWith("--output-directory=")
+);
 const configuredUrl = (process.env.STREAMLIT_APP_URL || "").trim();
+
+function resolveOutputDirectory() {
+  if (!outputArgument) {
+    return path.resolve(wrapperDirectory, "dist");
+  }
+
+  const requestedDirectory = outputArgument.split("=", 2)[1]?.trim();
+  if (!requestedDirectory) {
+    throw new Error("--output-directory requires a relative directory path.");
+  }
+
+  const resolvedDirectory = path.resolve(repositoryDirectory, requestedDirectory);
+  if (
+    resolvedDirectory === repositoryDirectory ||
+    !resolvedDirectory.startsWith(`${repositoryDirectory}${path.sep}`)
+  ) {
+    throw new Error("Output directory must stay inside the repository.");
+  }
+  return resolvedDirectory;
+}
+
+const outputDirectory = resolveOutputDirectory();
 
 function validateStreamlitUrl(value) {
   if (!value) {
@@ -69,8 +94,8 @@ if (checkOnly) {
   process.exit(0);
 }
 
-if (!outputDirectory.startsWith(`${wrapperDirectory}${path.sep}`)) {
-  throw new Error("Refusing to write outside the Cloudflare wrapper directory.");
+if (!outputDirectory.startsWith(`${repositoryDirectory}${path.sep}`)) {
+  throw new Error("Refusing to write outside the repository.");
 }
 
 await rm(outputDirectory, { recursive: true, force: true });
@@ -90,4 +115,4 @@ await writeFile(
   "utf8"
 );
 
-process.stdout.write(`Built Cloudflare Pages assets in ${outputDirectory}\n`);
+process.stdout.write(`Built Cloudflare assets in ${outputDirectory}\n`);
