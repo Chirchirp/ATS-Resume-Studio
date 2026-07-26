@@ -83,8 +83,11 @@ SECTION_ALIASES = {
         "professional qualifications",
     ),
     "projects": ("projects", "selected projects", "professional projects"),
-    "training": ("training", "professional development", "courses"),
-    "awards": ("awards", "honors", "honours"),
+    "training": (
+        "training", "professional development", "training professional development",
+        "courses",
+    ),
+    "awards": ("awards", "honors", "honours", "awards honors", "awards honours"),
     "languages": ("languages",),
     "memberships": ("memberships", "professional memberships", "affiliations"),
     "publications": ("publications",),
@@ -545,7 +548,7 @@ def canonical_resume_section(line: str) -> str | None:
     headings moves genuine evidence into the wrong section, so punctuation is
     ignored but the remaining heading text must match an alias exactly.
     """
-    clean = re.sub(r"[^a-z ]", "", line.lower()).strip()
+    clean = re.sub(r"\s+", " ", re.sub(r"[^a-z ]", " ", line.lower())).strip()
     for key, aliases in SECTION_ALIASES.items():
         if clean in aliases:
             return key

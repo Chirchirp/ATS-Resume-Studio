@@ -307,9 +307,18 @@ def make_docx_from_text(text: str, name: str = "") -> bytes:
 
         # Section header
         section_key = _section_key(line)
-        if section_key:
+        markdown_heading = re.match(r"^\s*#{1,3}\s+(.+?)\s*$", line)
+        if section_key or markdown_heading:
             in_core_skills = section_key == "skills"
-            heading_text = re.sub(r"[#\*_\-]{2,}", "", line.strip().rstrip(":")).strip()
+            heading_text = (
+                markdown_heading.group(1).strip()
+                if markdown_heading
+                else re.sub(
+                    r"[#\*_\-]{2,}",
+                    "",
+                    line.strip().rstrip(":"),
+                ).strip()
+            )
             h = doc.add_heading(heading_text, level=1)
             h.alignment = WD_ALIGN_PARAGRAPH.LEFT
             _set_bottom_border(h)

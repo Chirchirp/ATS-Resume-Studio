@@ -1,11 +1,15 @@
 """Phase 3 application workspace and career-positioning UI."""
 
+import csv
+import io
 from datetime import datetime, timezone
 
 import streamlit as st
 
+from utils.docx_builder import make_docx_from_text, validate_docx_roundtrip
 from utils.domain_profiles import domain_prompt_context, infer_domain_context
 from utils.evidence_engine import build_evidence_ledger, build_evidence_matrix
+from utils.text_processing import format_resume_for_display
 from utils.workspace_engine import (
     DocumentVersion,
     build_interview_questions,
@@ -82,9 +86,19 @@ def render_tab_workspace():
         st.markdown(f"**Thesis:** {selected.thesis}")
         st.markdown(f"**Best for:** {selected.best_for}")
         st.warning(f"**Integrity risk:** {selected.risk}")
+        evidence_by_id = ledger.by_id()
+        priority_quotes = [
+            evidence_by_id[item_id].text
+            for item_id in selected.evidence_ids[:4]
+            if item_id in evidence_by_id
+        ]
         st.caption(
             "Priority evidence: "
-            + (", ".join(selected.evidence_ids) if selected.evidence_ids else "No contextual evidence identified")
+            + (
+                " / ".join(f'“{text}”' for text in priority_quotes)
+                if priority_quotes
+                else "No contextual evidence identified"
+            )
         )
         with st.expander("Domain writing guidance"):
             st.text(domain_prompt_context(domain))
@@ -132,20 +146,53 @@ def render_tab_workspace():
             selected_version = next(
                 version for version in versions if version.id == selected_version_id
             )
-            st.text_area(
-                "Version content",
-                value=selected_version.text,
-                height=360,
-                disabled=True,
-                key="workspace_version_content",
+            preview_tab, source_tab = st.tabs(["Clean preview", "Plain-text source"])
+            with preview_tab:
+                st.markdown(
+                    format_resume_for_display(selected_version.text),
+                    unsafe_allow_html=True,
+                )
+            with source_tab:
+                st.text_area(
+                    "Version content",
+                    value=selected_version.text,
+                    height=360,
+                    disabled=True,
+                    key="workspace_version_content",
+                )
+            version_docx = make_docx_from_text(selected_version.text)
+            version_parse = validate_docx_roundtrip(
+                selected_version.text, version_docx
             )
-            st.download_button(
-                "Download selected version as text",
-                data=selected_version.text.encode("utf-8"),
-                file_name=f"{selected_version.id}_resume.txt",
-                mime="text/plain",
-                width="stretch",
-            )
+            if version_parse.is_safe:
+                st.caption(
+                    f"Word export passed ATS round-trip validation: "
+                    f"{version_parse.score}/100."
+                )
+            else:
+                st.warning(
+                    "Word export has a parseability warning. Review the document "
+                    "before submitting it."
+                )
+            d1, d2 = st.columns(2)
+            with d1:
+                st.download_button(
+                    "Download selected version as DOCX",
+                    data=version_docx,
+                    file_name=f"{selected_version.id}_resume.docx",
+                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    width="stretch",
+                    key=f"workspace_docx_{selected_version.id}",
+                )
+            with d2:
+                st.download_button(
+                    "Download selected version as text",
+                    data=selected_version.text.encode("utf-8"),
+                    file_name=f"{selected_version.id}_resume.txt",
+                    mime="text/plain",
+                    width="stretch",
+                    key=f"workspace_text_{selected_version.id}",
+                )
 
         if optimized:
             impact = compare_versions(resume, optimized, jd)
@@ -180,13 +227,24 @@ def render_tab_workspace():
                 st.markdown(f"**Preparation:** {objection.preparation}")
 
         st.markdown("#### Evidence-grounded interview pack")
+        evidence_by_id = ledger.by_id()
         for index, question in enumerate(
             build_interview_questions(matrix, ledger, domain),
             start=1,
         ):
             st.markdown(f"**{index}. {question.question}**")
+            evidence_quotes = [
+                evidence_by_id[item_id].text
+                for item_id in question.evidence_ids
+                if item_id in evidence_by_id
+            ]
             st.caption(
-                "Evidence: " + (", ".join(question.evidence_ids) or "Choose a verified example")
+                "Starting evidence: "
+                + (
+                    " / ".join(f'“{text}”' for text in evidence_quotes)
+                    if evidence_quotes
+                    else "Choose a verified example"
+                )
             )
             st.write(question.answer_plan)
 
@@ -297,4 +355,14 @@ def render_tab_workspace():
             )
             o3.metric("Offers", sum(item["status"] == "Offer" for item in outcomes))
             st.dataframe(outcomes, width="stretch", hide_index=True)
-
+            buffer = io.StringIO()
+            writer = csv.DictWriter(buffer, fieldnames=list(outcomes[0]))
+            writer.writeheader()
+            writer.writerows(outcomes)
+            st.download_button(
+                "Download outcomes as CSV",
+                data=buffer.getvalue().encode("utf-8"),
+                file_name="application_outcomes.csv",
+                mime="text/csv",
+                width="stretch",
+            )

@@ -60,7 +60,14 @@ def reasoning_effort_for_task(
     """Keep short Groq tasks from consuming their output budget on hidden reasoning."""
     if provider != "groq":
         return configured_effort
-    if task not in {"classification", "resume"}:
+    if task not in {
+        "classification",
+        "resume",
+        "cover_letter",
+        "query",
+        "rewrite",
+        "resume_quality",
+    }:
         return configured_effort
     if model == "qwen/qwen3.6-27b":
         return "none"

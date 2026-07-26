@@ -35,6 +35,7 @@ from utils.evidence_engine import (
     build_evidence_ledger,
     build_evidence_matrix,
     build_safe_evidence_resume,
+    candidate_facing_grounding_context,
     compact_grounding_context,
     compact_optional_draft,
     compact_prompt_block,
@@ -50,7 +51,9 @@ from utils.evidence_engine import (
 from utils.logger import log_usage
 from utils.text_processing import (
     clean_resume_output,
+    finalize_cover_letter,
     format_resume_for_display,
+    sanitize_candidate_feedback,
     sanitize_display_text,
 )
 from utils.workspace_engine import build_positioning_strategies
@@ -293,6 +296,12 @@ def _run_ai_truth_repair(
         ledger,
         target_pages=rout.get("target_pages", 3),
     )
+    repaired = repair_grounded_resume_draft(
+        repaired,
+        ledger,
+        jd_text,
+        role_plans,
+    )
     repaired_validation = validate_grounded_resume_draft(
         repaired,
         ledger,
@@ -407,6 +416,23 @@ def _alignment_markdown(report: AlignmentReport) -> str:
     return "\n".join(lines)
 
 
+def _recruiter_alignment_context(report: AlignmentReport, matrix) -> str:
+    lines = [
+        f"Authoritative Job Alignment Score: {report.score}/100",
+        f"Confidence: {report.confidence}",
+    ]
+    lines.extend(
+        f"- {dimension.label}: {dimension.score:.1f}/{dimension.maximum:.0f}"
+        for dimension in report.dimensions
+    )
+    lines.append("Authoritative requirement statuses:")
+    lines.extend(
+        f"- {row.status.upper()}: {row.requirement}"
+        for row in matrix.rows
+    )
+    return "\n".join(lines)
+
+
 def _infer_field(jd_text: str, prefs: dict) -> str:
     if prefs.get("target_field", "").strip():
         return prefs["target_field"].strip()
@@ -499,17 +525,33 @@ def _render_tools(prefs: dict):
                     st.session_state.get("clarification_answers", {}),
                 )
                 matrix = build_evidence_matrix(st.session_state["jd"], ledger)
-                grounding = compact_grounding_context(ledger, matrix)
+                alignment = analyze_alignment(
+                    st.session_state["jd"], st.session_state["resume"]
+                )
+                grounding = candidate_facing_grounding_context(
+                    ledger,
+                    matrix,
+                    alignment_score=alignment.score,
+                    confidence=alignment.confidence,
+                )
                 with st.spinner("Sarah Chen is reviewing your resume… (30-60 s)"):
-                    result = _call_ai(
-                        build_recruiter_prompt(
-                            fields=fields_ctx,
-                            jd=st.session_state["jd"],
-                            resume=grounding,
+                    result = sanitize_candidate_feedback(
+                        _call_ai(
+                            build_recruiter_prompt(
+                                fields=fields_ctx,
+                                jd=st.session_state["jd"],
+                                resume=grounding,
+                                alignment_context=_recruiter_alignment_context(
+                                    alignment, matrix
+                                ),
+                            ),
+                            system_prompt=get_recruiter_system_prompt()
+                            + " "
+                            + BASE_SYSTEM_PROMPT,
+                            temperature=0.1,
+                            task="recruiter",
                         ),
-                        system_prompt=get_recruiter_system_prompt() + " " + BASE_SYSTEM_PROMPT,
-                        temperature=0.2,
-                        task="recruiter",
+                        st.session_state["resume"],
                     )
                 if result:
                     st.session_state.setdefault("premium_tools_output", {})["recruiter_feedback"] = result
@@ -557,6 +599,29 @@ def _render_tools(prefs: dict):
         if "recruiter_feedback" in tool_out:
             st.markdown("##### 🎯 Recruiter Feedback")
             _display_md(tool_out["recruiter_feedback"])
+            feedback_bytes = make_docx_from_text(
+                tool_out["recruiter_feedback"],
+                name="Senior Recruiter Review",
+            )
+            export_a, export_b = st.columns(2)
+            with export_a:
+                st.download_button(
+                    "📥 Download Recruiter Review DOCX",
+                    data=feedback_bytes,
+                    file_name="Senior_Recruiter_Review.docx",
+                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    width="stretch",
+                    key="download_recruiter_docx",
+                )
+            with export_b:
+                st.download_button(
+                    "📥 Download Recruiter Review Markdown",
+                    data=tool_out["recruiter_feedback"].encode("utf-8"),
+                    file_name="senior_recruiter_review.md",
+                    mime="text/markdown",
+                    width="stretch",
+                    key="download_recruiter_md",
+                )
             st.divider()
         if "tool_query" in tool_out:
             st.markdown("##### 💬 Query Answer")
@@ -921,6 +986,12 @@ def _render_resume_gen(prefs: dict):
             ledger,
             target_pages=target_pages,
         )
+        resume_draft = repair_grounded_resume_draft(
+            resume_draft,
+            ledger,
+            st.session_state["jd"],
+            role_plans,
+        )
         first_validation = validate_grounded_resume_draft(
             resume_draft, ledger, st.session_state["jd"]
         )
@@ -972,6 +1043,12 @@ def _render_resume_gen(prefs: dict):
                     reviewed_draft,
                     ledger,
                     target_pages=target_pages,
+                )
+                reviewed_draft = repair_grounded_resume_draft(
+                    reviewed_draft,
+                    ledger,
+                    st.session_state["jd"],
+                    role_plans,
                 )
                 reviewed_validation = validate_grounded_resume_draft(
                     reviewed_draft, ledger, st.session_state["jd"]
@@ -1482,6 +1559,12 @@ def _render_resume_gen(prefs: dict):
                     current_ledger,
                     target_pages=rout.get("target_pages", 3),
                 )
+                edited_annotated = repair_grounded_resume_draft(
+                    edited_annotated,
+                    current_ledger,
+                    st.session_state.get("jd", ""),
+                    role_plans,
+                )
                 edited_validation = validate_grounded_resume_draft(
                     edited_annotated,
                     current_ledger,
@@ -1700,6 +1783,17 @@ def _render_cover_letter(prefs: dict):
                 task="cover_letter",
             )
         if letter:
+            cover_source_text = "\n".join(item.text for item in cover_ledger.items)
+            cover_name = (
+                cover_ledger.profile.candidate_name
+                if cover_ledger.profile
+                else ""
+            )
+            letter = finalize_cover_letter(
+                letter,
+                cover_source_text,
+                cover_name,
+            )
             first_cover_validation = validate_generated_claims(
                 letter, cover_ledger, st.session_state["jd"]
             )
@@ -1727,9 +1821,15 @@ def _render_cover_letter(prefs: dict):
                         system_prompt=RESUME_WRITER_SYSTEM_PROMPT,
                         temperature=0.05,
                         task="cover_letter",
+                        show_error=False,
                     )
                 review_pass = "two_pass_unavailable"
                 if reviewed_letter:
+                    reviewed_letter = finalize_cover_letter(
+                        reviewed_letter,
+                        cover_source_text,
+                        cover_name,
+                    )
                     reviewed_cover_validation = validate_generated_claims(
                         reviewed_letter, cover_ledger, st.session_state["jd"]
                     )
@@ -1741,6 +1841,9 @@ def _render_cover_letter(prefs: dict):
                         review_pass = "two_pass_reviewed"
                     else:
                         review_pass = "two_pass_rejected_unsafe_revision"
+                else:
+                    st.session_state.pop("last_ai_error", None)
+                    st.session_state.pop("_last_call_ai_error", None)
             st.session_state["premium_cover_output"] = {
                 "tone": tone,
                 "letter": letter,
@@ -1763,16 +1866,25 @@ def _render_cover_letter(prefs: dict):
                 "The reviewed letter introduced more truth-audit risk, so the safer "
                 "first draft was retained."
             )
+        elif cov.get("review_pass") == "two_pass_unavailable":
+            st.caption(
+                "The optional review pass was unavailable; the completed, grounded "
+                "first pass was retained."
+            )
         _display_md(cov.get("letter", ""))
         cover_validation = cov.get("validation")
         if isinstance(cover_validation, ClaimValidationReport):
             if cover_validation.is_download_safe:
                 st.success("Cover-letter truth audit passed.")
             else:
-                st.error("Downloads are disabled because the cover letter contains unsupported claims.")
+                st.error(
+                    "The cover letter contains unsupported claims. Downloads remain "
+                    "available for review, but resolve these issues before submission."
+                )
                 for issue in cover_validation.issues:
                     st.markdown(f"- **{issue.issue_type}:** {issue.detail}")
 
+        cover_ready = bool(cov.get("letter", "").strip())
         dl1, dl2 = st.columns(2)
         with dl1:
             st.download_button(
@@ -1781,8 +1893,7 @@ def _render_cover_letter(prefs: dict):
                 file_name="Cover_Letter.docx",
                 mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                 width="stretch",
-                disabled=isinstance(cover_validation, ClaimValidationReport)
-                and not cover_validation.is_download_safe,
+                disabled=not cover_ready,
             )
         with dl2:
             st.download_button(
@@ -1791,8 +1902,7 @@ def _render_cover_letter(prefs: dict):
                 file_name="cover_letter.md",
                 mime="text/markdown",
                 width="stretch",
-                disabled=isinstance(cover_validation, ClaimValidationReport)
-                and not cover_validation.is_download_safe,
+                disabled=not cover_ready,
             )
 
 
@@ -1830,4 +1940,31 @@ def _render_custom_query(prefs: dict):
 
     if st.session_state.get("premium_custom_output"):
         st.divider()
-        _display_md(st.session_state["premium_custom_output"])
+        custom_output = sanitize_candidate_feedback(
+            st.session_state["premium_custom_output"],
+            st.session_state.get("resume", ""),
+        )
+        _display_md(custom_output)
+        custom_docx = make_docx_from_text(
+            custom_output,
+            name="ATS Resume Studio Advisory",
+        )
+        q1, q2 = st.columns(2)
+        with q1:
+            st.download_button(
+                "📥 Download Advisory DOCX",
+                data=custom_docx,
+                file_name="ATS_Resume_Studio_Advisory.docx",
+                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                width="stretch",
+                key="download_custom_advisory_docx",
+            )
+        with q2:
+            st.download_button(
+                "📥 Download Advisory Markdown",
+                data=custom_output.encode("utf-8"),
+                file_name="ats_resume_studio_advisory.md",
+                mime="text/markdown",
+                width="stretch",
+                key="download_custom_advisory_md",
+            )

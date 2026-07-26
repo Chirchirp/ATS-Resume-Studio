@@ -97,6 +97,147 @@ def sanitize_display_text(text: str, placeholder: str = "[Removed]") -> str:
     return text
 
 
+def sanitize_candidate_feedback(text: str, source_text: str = "") -> str:
+    """Remove internal notation and unsafe hypothetical claims from feedback."""
+    clean = sanitize_display_text(text)
+    if not clean:
+        return ""
+    clean = re.sub(r"\[(?:E|R|ROLE)\d{3}\]", "", clean, flags=re.I)
+    clean = re.sub(r"\b(?:E|R|ROLE)\d{3}\b", "", clean, flags=re.I)
+    clean = re.sub(r"\(\s*(?:[,;/]\s*)*\)", "", clean)
+    if source_text:
+        source_flat = re.sub(r"\s+", " ", source_text).casefold()
+        guarded_lines = []
+        for line in clean.splitlines():
+            line = re.sub(
+                r"\s*\((?:e\.g\.|for example),?[^)]*\)",
+                "",
+                line,
+                flags=re.I,
+            )
+            if re.search(r"\*\*rewrite:\*\*", line, flags=re.I):
+                line = re.sub(
+                    r"\s*\*\*rewrite:\*\*.*$",
+                    " **Safe action:** retain the source wording until the candidate "
+                    "verifies an exact outcome or metric.",
+                    line,
+                    flags=re.I,
+                )
+            is_edit = bool(re.search(
+                r"\b(?:add|insert|include|rewrite|replace|specify)\b",
+                line,
+                flags=re.I,
+            ))
+            has_hypothetical = bool(re.search(
+                r"(?:\be\.g\.|\bfor example\b|\bsuch as\b)",
+                line,
+                flags=re.I,
+            ))
+            numeric_claims = re.findall(
+                r"\b\d+(?:\.\d+)?\s*(?:%|percent|hours?|days?|weeks?|months?|years?)\b",
+                line,
+                flags=re.I,
+            )
+            has_unsupported_number = any(
+                re.sub(r"\s+", " ", claim).casefold() not in source_flat
+                for claim in numeric_claims
+            )
+            if is_edit and (has_hypothetical or has_unsupported_number):
+                prefix_match = re.match(
+                    r"^(\s*(?:[-*]\s*)?(?:\*\*[^*]+\*\*|[^–—:\n]+))"
+                    r"(?:\s*[–—:]\s*).*$",
+                    line,
+                )
+                prefix = prefix_match.group(1).rstrip() if prefix_match else line.split(
+                    "e.g.", 1
+                )[0].rstrip(" ,;:–—-")
+                line = (
+                    prefix
+                    + " — ask the candidate for the exact verified detail; "
+                    "leave it as a documented gap if none exists."
+                )
+            elif is_edit:
+                line = re.sub(
+                    r"\s*\(e\.g\.,[^)]*\)",
+                    "",
+                    line,
+                    flags=re.I,
+                )
+                line = re.sub(
+                    r"\s+[–—-]\s*e\.g\.,?.*$",
+                    " — ask the candidate for the exact verified detail; "
+                    "leave it as a gap if none exists.",
+                    line,
+                    flags=re.I,
+                )
+            guarded_lines.append(line)
+        clean = "\n".join(guarded_lines)
+    clean = re.sub(r" {2,}", " ", clean)
+    clean = re.sub(r"\*\*\s*##\s*", "## ", clean)
+    return clean.strip()
+
+
+def finalize_cover_letter(
+    text: str,
+    source_text: str = "",
+    candidate_name: str = "",
+) -> str:
+    """Remove internal citations, unsafe training extrapolation, and truncation."""
+    clean = sanitize_display_text(text)
+    if not clean:
+        return ""
+    clean = re.sub(
+        r"\s*(?:【\s*E\d{3}\s*】|\[\s*E\d{3}\s*\])",
+        "",
+        clean,
+        flags=re.I,
+    )
+    clean = re.sub(
+        r"\s*,?\s*(?:which\s+)?equips me to[^.!?]*(?=[.!?])",
+        "",
+        clean,
+        flags=re.I,
+    )
+
+    source_lower = re.sub(r"\s+", " ", source_text).casefold()
+    has_compliance_action = bool(re.search(
+        r"\b(?:ensur(?:e|ed|ing)|upheld|complied|adhered|enforced)\b.{0,80}"
+        r"\b(?:hse|phytosanitary|hygiene|compliance|protocols?)\b",
+        source_lower,
+        flags=re.I,
+    ))
+    if not has_compliance_action:
+        clean = re.sub(
+            r"(?<=[.!?]\s)|^"
+            r"[^.!?]*\b(?:ensur(?:e|ed|ing)|uphold|complied|adhered|enforced)\b"
+            r"[^.!?]*\b(?:hse|phytosanitary|hygiene|compliance|protocols?)\b"
+            r"[^.!?]*[.!?]\s*",
+            "",
+            clean,
+            flags=re.I,
+        )
+
+    paragraphs = [value.strip() for value in re.split(r"\n\s*\n", clean) if value.strip()]
+    if paragraphs and not re.search(r"[.!?\"”]$", paragraphs[-1]):
+        paragraphs.pop()
+    clean = "\n\n".join(paragraphs).strip()
+
+    if not re.search(
+        r"\b(?:sincerely|kind regards|best regards|respectfully)\b",
+        clean[-400:],
+        flags=re.I,
+    ):
+        signatory = candidate_name.strip() or "Candidate"
+        clean = (
+            clean.rstrip()
+            + "\n\nThank you for considering my application. I would welcome the "
+            "opportunity to discuss how my verified experience can support this role."
+            + "\n\nSincerely,\n"
+            + signatory
+        )
+    return clean.strip()
+
+
 def clean_resume_output(text: str) -> str:
     """Strip markdown formatting symbols from AI-generated resume text."""
     if not text:

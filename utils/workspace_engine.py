@@ -144,7 +144,7 @@ def build_recruiter_objections(
         if row.status in {"direct", "equivalent"}:
             continue
         evidence = "; ".join(
-            f"[{item_id}] {by_id[item_id].text}"
+            f"“{by_id[item_id].text}”"
             for item_id in row.evidence_ids
             if item_id in by_id
         )
@@ -171,21 +171,18 @@ def build_interview_questions(
     domain: DomainContext,
     limit: int = 6,
 ) -> list[InterviewQuestion]:
-    by_id = ledger.by_id()
     questions: list[InterviewQuestion] = []
     for row in matrix.rows:
         if not row.evidence_ids:
             continue
         ids = tuple(row.evidence_ids[:2])
-        evidence_preview = " / ".join(by_id[item].text for item in ids if item in by_id)
         questions.append(
             InterviewQuestion(
                 question=f"Tell me about a time you demonstrated: {row.requirement}",
                 evidence_ids=ids,
                 answer_plan=(
                     "Situation: establish relevant context. Task: clarify your ownership. "
-                    "Action: explain method and judgment. Result: use only verified outcomes. "
-                    f"Starting evidence: {evidence_preview}"
+                    "Action: explain method and judgment. Result: use only verified outcomes."
                 ),
             )
         )
@@ -258,4 +255,3 @@ def compare_versions(original: str, optimized: str, jd_text: str) -> ChangeImpac
         added_lines=added,
         removed_lines=removed,
     )
-
