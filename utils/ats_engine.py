@@ -61,12 +61,28 @@ GENERIC_TERMS = {
 }
 
 SECTION_ALIASES = {
-    "summary": ("summary", "profile", "objective", "about"),
-    "skills": ("skills", "technologies", "competencies", "expertise", "toolkit"),
-    "experience": ("experience", "employment", "work history", "career history"),
-    "education": ("education", "academic"),
-    "certifications": ("certifications", "certificates", "licenses"),
-    "projects": ("projects",),
+    "summary": (
+        "summary", "professional summary", "profile", "professional profile",
+        "career summary", "objective", "about",
+    ),
+    "skills": (
+        "skills", "core skills", "key skills", "technical skills",
+        "technologies", "competencies", "core competencies", "expertise",
+        "areas of expertise", "technical proficiencies", "toolkit",
+    ),
+    "experience": (
+        "experience", "professional experience", "work experience",
+        "employment", "employment history", "work history", "career history",
+    ),
+    "education": (
+        "education", "academic", "academic background", "education background",
+        "qualifications",
+    ),
+    "certifications": (
+        "certifications", "certificates", "licenses", "licences", "credentials",
+        "professional qualifications",
+    ),
+    "projects": ("projects", "selected projects", "professional projects"),
     "training": ("training", "professional development", "courses"),
     "awards": ("awards", "honors", "honours"),
     "languages": ("languages",),
@@ -77,6 +93,15 @@ SECTION_ALIASES = {
         "volunteer experience",
         "community involvement",
     ),
+    "achievements": (
+        "achievements",
+        "key achievements",
+        "career highlights",
+        "selected achievements",
+        "accomplishments",
+    ),
+    "references": ("references", "referees"),
+    "interests": ("interests", "professional interests", "hobbies"),
 }
 
 SKILL_PHRASES = {
@@ -282,8 +307,25 @@ class AlignmentReport:
 
 
 def _clean_line(line: str) -> str:
-    line = re.sub(r"^[\s•*\-–—\d.)]+", "", line)
+    line = re.sub(r"^[\s•▪◦●\uf0b7*\-–—\d.)]+", "", line)
     return re.sub(r"\s+", " ", line).strip()
+
+
+def _restore_resume_bullet_boundaries(text: str) -> str:
+    """Split common PDF bullet glyphs that were flattened into one line."""
+    restored = text.replace("\r\n", "\n").replace("\r", "\n")
+    restored = re.sub(
+        r"\s+[•▪◦●\uf0b7]\s+",
+        "\n- ",
+        restored,
+    )
+    lines = []
+    for line in restored.splitlines():
+        clean = line.strip()
+        if re.match(r"^[•▪◦●\uf0b7]\s+", clean):
+            clean = re.sub(r"^[•▪◦●\uf0b7]\s+", "- ", clean, count=1)
+        lines.append(clean)
+    return "\n".join(lines)
 
 
 def _normalize_term(term: str) -> str:
@@ -495,17 +537,23 @@ def extract_job_profile(text: str) -> JobProfile:
     return profile
 
 
-def _section_key(line: str) -> str | None:
+def canonical_resume_section(line: str) -> str | None:
+    """Return a canonical section only for an explicit heading alias.
+
+    Resume content frequently ends with heading-like words (for example,
+    ``Smartsheet Core Product Training | 2021``). Treating suffix matches as
+    headings moves genuine evidence into the wrong section, so punctuation is
+    ignored but the remaining heading text must match an alias exactly.
+    """
     clean = re.sub(r"[^a-z ]", "", line.lower()).strip()
     for key, aliases in SECTION_ALIASES.items():
-        if any(
-            clean == alias
-            or clean.startswith(alias + " ")
-            or clean.endswith(" " + alias)
-            for alias in aliases
-        ):
+        if clean in aliases:
             return key
     return None
+
+
+def _section_key(line: str) -> str | None:
+    return canonical_resume_section(line)
 
 
 def _candidate_name(lines: list[str]) -> str:
@@ -660,7 +708,7 @@ def _parse_roles(lines: list[tuple[int, str]]) -> tuple[tuple[ResumeRole, ...], 
         current = None
 
     for source_line, line in lines:
-        is_bullet = bool(re.match(r"^\s*[•*\-–—]\s+", line))
+        is_bullet = bool(re.match(r"^\s*[•▪◦●\uf0b7*\-–—]\s+", line))
         if is_bullet:
             if pending_headers and current:
                 current["details"].extend(
@@ -733,7 +781,7 @@ def _parse_projects(lines: list[tuple[int, str]]) -> tuple[ResumeProject, ...]:
         current_title, current_line, bullets, details = "", 0, [], []
 
     for source_line, line in lines:
-        if re.match(r"^\s*[•*\-–—]\s+", line):
+        if re.match(r"^\s*[•▪◦●\uf0b7*\-–—]\s+", line):
             bullets.append(_resume_bullet(line, source_line))
         elif not current_title:
             current_title = _clean_line(line)
@@ -750,6 +798,7 @@ def _parse_projects(lines: list[tuple[int, str]]) -> tuple[ResumeProject, ...]:
 
 def extract_resume_profile(text: str) -> ResumeProfile:
     """Extract one canonical, provenance-preserving candidate profile."""
+    text = _restore_resume_bullet_boundaries(text)
     indexed_lines = [
         (index, line.strip())
         for index, line in enumerate(text.splitlines(), start=1)
@@ -1001,7 +1050,9 @@ def analyze_alignment(jd_text: str, resume_text: str) -> AlignmentReport:
     else:
         experience_lines = resume.sections.get("experience", "").splitlines()
         bullet_like = [
-            line for line in experience_lines if re.match(r"^\s*[•*-]", line)
+            line
+            for line in experience_lines
+            if re.match(r"^\s*[•▪◦●\uf0b7*\-–—]", line)
         ]
         metric_lines = [
             line for line in experience_lines if METRIC_RE.search(line)

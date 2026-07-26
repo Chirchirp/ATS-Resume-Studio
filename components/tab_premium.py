@@ -653,7 +653,7 @@ def _render_resume_gen(prefs: dict):
                 width="stretch",
                 help=(
                     "Restores exact source roles, evidence, JD mappings, dates, and records. "
-                    "Use this when an unsupported AI claim is blocking downloads."
+                    "Use this when you want a source-only version with no unresolved claims."
                 ),
             )
 
@@ -1219,7 +1219,8 @@ def _render_resume_gen(prefs: dict):
             if source_changed:
                 st.error(
                     "The source resume or verified evidence changed after this document "
-                    "was generated. Regenerate it before downloading."
+                    "was generated. Regenerate before submitting it; review downloads "
+                    "remain available."
                 )
             elif validation.is_download_safe:
                 st.success(
@@ -1229,8 +1230,8 @@ def _render_resume_gen(prefs: dict):
             else:
                 st.error(
                     "Truth audit found unsupported claims. Use **Regenerate & improve** to "
-                    "rewrite them, or **Create safe evidence-only version** to restore a "
-                    "downloadable version immediately."
+                    "rewrite them, or **Create safe evidence-only version** before "
+                    "submitting. Downloads remain enabled for your review."
                 )
                 with st.expander("View truth-audit issues", expanded=True):
                     for issue in validation.issues:
@@ -1248,15 +1249,7 @@ def _render_resume_gen(prefs: dict):
         )
         with tabs[0]:
             formatted = format_resume_for_display(rout.get("resume", ""))
-            st.markdown(
-                '<div style="background:white; padding:28px 32px; border-radius:10px; '
-                'border:1px solid #d8e1ea; border-top:4px solid #1b7f79; '
-                'box-shadow:0 8px 24px rgba(23,54,93,.08); color:#263645; '
-                'font-family:Arial,sans-serif; line-height:1.55;">',
-                unsafe_allow_html=True,
-            )
-            st.markdown(formatted)
-            st.markdown("</div>", unsafe_allow_html=True)
+            st.markdown(formatted, unsafe_allow_html=True)
 
         with tabs[1]:
             achievement_validation = rout.get("achievement_validation")
@@ -1546,9 +1539,10 @@ def _render_resume_gen(prefs: dict):
                 f"({score_delta:+d} points from preview)."
             )
         else:
-            st.error(
-                "DOCX round-trip validation found an extraction risk. DOCX download "
-                "is disabled; Markdown remains available when the truth audit passes."
+            st.warning(
+                "DOCX validation found an extraction or alignment warning. The download "
+                "remains available so you can review it in Word; inspect the warnings "
+                "below before submitting the resume."
             )
             for issue in docx_parse.issues:
                 st.markdown(f"- {issue}")
@@ -1558,21 +1552,36 @@ def _render_resume_gen(prefs: dict):
                     f"to {extracted_alignment.score}%."
                 )
 
+        truth_warning = (
+            isinstance(validation, ClaimValidationReport)
+            and not validation.is_download_safe
+        )
+        if source_changed or truth_warning:
+            st.warning(
+                "Download is enabled for review. The file represents the generated "
+                "version currently shown above; resolve any source-change or truth-audit "
+                "warning before using it in an application."
+            )
+        download_ready = bool(rout.get("resume", "").strip()) and bool(docx_bytes)
+        candidate_slug = re.sub(
+            r"[^A-Za-z0-9]+",
+            "_",
+            rout.get("candidate_name", "").strip(),
+        ).strip("_")
+        docx_name = (
+            f"{candidate_slug}_ATS_Resume.docx"
+            if candidate_slug
+            else "ATS_Optimized_Resume.docx"
+        )
         dl1, dl2 = st.columns(2)
         with dl1:
             st.download_button(
                 "📥 Download DOCX",
                 data=docx_bytes,
-                file_name="ATS_Optimized_Resume.docx",
+                file_name=docx_name,
                 mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                 width="stretch",
-                disabled=source_changed
-                or not docx_parse.is_safe
-                or not docx_alignment_consistent
-                or (
-                    isinstance(validation, ClaimValidationReport)
-                    and not validation.is_download_safe
-                ),
+                disabled=not download_ready,
             )
         with dl2:
             st.download_button(
@@ -1581,11 +1590,7 @@ def _render_resume_gen(prefs: dict):
                 file_name="ats_optimized_resume.md",
                 mime="text/markdown",
                 width="stretch",
-                disabled=source_changed
-                or (
-                    isinstance(validation, ClaimValidationReport)
-                    and not validation.is_download_safe
-                ),
+                disabled=not download_ready,
             )
 
         # Comparison — use a toggle button instead of a nested expander

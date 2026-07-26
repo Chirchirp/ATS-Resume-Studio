@@ -2,10 +2,23 @@
 utils/text_processing.py — PDF extraction, keyword matching, and text sanitization.
 """
 
+import html
 import re
 
 import PyPDF2 as pdf
-from utils.ats_engine import analyze_alignment, extract_alignment_terms
+from utils.ats_engine import (
+    analyze_alignment,
+    canonical_resume_section,
+    extract_alignment_terms,
+    extract_resume_profile,
+)
+
+
+BULLET_PREFIX_RE = re.compile(r"^\s*[•▪◦●\uf0b7*\-–—]\s+")
+INLINE_GLYPH_BULLET_RE = re.compile(r"\s+[•▪◦●\uf0b7]\s+")
+INLINE_DASH_BULLET_RE = re.compile(
+    r"(?<=[.!?;:])\s+[-*]\s+(?=[A-Z0-9])"
+)
 
 
 # ──────────────────────────────────────────────────────────────
@@ -24,7 +37,7 @@ def extract_text_from_pdf(uploaded_file) -> str:
                 txt = ""
             if txt:
                 parts.append(txt)
-        return "\n".join(parts)
+        return normalize_resume_structure("\n".join(parts))
     except Exception:
         return ""
 
@@ -92,79 +105,167 @@ def clean_resume_output(text: str) -> str:
     text = re.sub(r"\*\*", "", text)
     text = re.sub(r"^_{2,}\s*$", "", text, flags=re.MULTILINE)
     text = re.sub(r"^[-\*_]{3,}\s*$", "", text, flags=re.MULTILINE)
-    text = re.sub(r"\n{3,}", "\n\n", text)
-    return text.strip()
+    return normalize_resume_structure(text)
+
+
+def normalize_resume_structure(text: str) -> str:
+    """Normalize line endings and restore explicit bullet boundaries.
+
+    PDF extractors and language models sometimes return multiple visible bullets
+    inside one paragraph. Converting every recognized marker to a dedicated
+    source line gives the browser preview, truth audit, and DOCX builder the same
+    deterministic structure.
+    """
+    if not text:
+        return ""
+    normalized = text.replace("\r\n", "\n").replace("\r", "\n")
+    output: list[str] = []
+    for raw_line in normalized.splitlines():
+        line = re.sub(r"[ \t]+", " ", raw_line).strip()
+        if not line:
+            if output and output[-1] != "":
+                output.append("")
+            continue
+        line = INLINE_GLYPH_BULLET_RE.sub("\n- ", line)
+        if BULLET_PREFIX_RE.match(line):
+            line = BULLET_PREFIX_RE.sub("- ", line, count=1)
+            line = INLINE_DASH_BULLET_RE.sub("\n- ", line)
+        for fragment in line.split("\n"):
+            clean = fragment.strip()
+            if clean:
+                output.append(clean)
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(output)).strip()
+
+
+def _display_section_key(line: str) -> str | None:
+    return canonical_resume_section(line)
+
+
+def _is_contact_line(line: str, profile) -> bool:
+    lowered = line.lower()
+    known_values = (
+        profile.contact.emails
+        + profile.contact.phones
+        + profile.contact.links
+    )
+    return bool(
+        any(value and value in line for value in known_values)
+        or any(
+            marker in lowered
+            for marker in ("@", "email", "phone", "linkedin", "github")
+        )
+    )
 
 
 def format_resume_for_display(text: str) -> str:
-    """Convert plain resume text into markdown suitable for st.markdown display."""
+    """Render a safe, semantic, single-column resume preview as HTML."""
     if not text:
         return ""
-
-    lines = text.split("\n")
-    out = []
+    text = normalize_resume_structure(text)
+    profile = extract_resume_profile(text)
+    lines = text.splitlines()
+    out = [
+        """
+<style>
+.ats-resume-preview{background:#fff;color:#263645;border:1px solid #d8e1ea;
+border-top:5px solid #1b7f79;border-radius:12px;padding:34px 40px;
+box-shadow:0 10px 30px rgba(23,54,93,.09);font-family:Arial,sans-serif;
+font-size:15px;line-height:1.5;max-width:900px;margin:0 auto}
+.ats-resume-preview h1{color:#17365d;font-size:30px;line-height:1.15;
+margin:0 0 5px;font-weight:750;letter-spacing:-.02em}
+.ats-resume-preview .contact{color:#536779;font-size:13px;margin:0 0 18px;
+word-break:break-word}
+.ats-resume-preview h2{color:#17365d;font-size:15px;line-height:1.25;
+letter-spacing:.075em;margin:22px 0 9px;padding-bottom:5px;
+border-bottom:2px solid #1b7f79;font-weight:750}
+.ats-resume-preview p{margin:0 0 8px}
+.ats-resume-preview .record{margin:13px 0 4px;color:#263645}
+.ats-resume-preview .record .primary{font-weight:700;color:#17365d}
+.ats-resume-preview .record .separator{color:#1b7f79;padding:0 5px}
+.ats-resume-preview .skill-line{margin:0 0 6px}
+.ats-resume-preview .skill-line strong{color:#17365d}
+.ats-resume-preview ul{margin:5px 0 10px;padding-left:23px}
+.ats-resume-preview li{margin:0 0 7px;padding-left:3px;line-height:1.48}
+.ats-resume-preview li::marker{color:#1b7f79}
+@media(max-width:700px){.ats-resume-preview{padding:24px 20px;font-size:14px}
+.ats-resume-preview h1{font-size:25px}}
+</style>
+<article class="ats-resume-preview">
+"""
+    ]
     in_core_skills = False
+    list_open = False
+    name_written = False
 
-    for line in lines:
-        line = line.strip()
+    def close_list():
+        nonlocal list_open
+        if list_open:
+            out.append("</ul>")
+            list_open = False
 
+    for raw_line in lines:
+        line = raw_line.strip()
         if not line:
-            if out and out[-1] != "":
-                out.append("")
             continue
 
-        # Section headers
-        if (line.isupper() and len(line.split()) <= 4) or re.match(
-            r"^(PROFESSIONAL SUMMARY|PROFESSIONAL EXPERIENCE|CORE SKILLS|"
-            r"WORK EXPERIENCE|EDUCATION|CERTIFICATIONS?|TECHNICAL SKILLS|PROJECTS)[\s:]*$",
-            line,
-            re.I,
-        ):
-            in_core_skills = bool(
-                re.match(r"^(CORE SKILLS|TECHNICAL SKILLS)[\s:]*$", line, re.I)
-            )
-            if out:
-                out.extend(["", "---", ""])
-            header = re.sub(r"[#\*_\-]{2,}", "", line.strip().rstrip(":")).strip()
-            out.extend([f"### {header}", ""])
-            continue
-
-        # Skill category lines (bold label)
+        clean_line = re.sub(r"\*\*", "", line).strip()
         if (
-            ("–" in line or "—" in line or (":" in line and len(line.split(":")[0].split()) <= 6))
-            and not line.startswith("[")
-            and "|" not in line
+            profile.candidate_name
+            and not name_written
+            and clean_line.casefold() == profile.candidate_name.casefold()
         ):
-            if "–" in line:
-                parts = line.split("–", 1)
-                formatted = f"**{parts[0].strip()}** – {parts[1].strip()}" if len(parts) > 1 else line
-            elif "—" in line:
-                parts = line.split("—", 1)
-                formatted = f"**{parts[0].strip()}** — {parts[1].strip()}" if len(parts) > 1 else line
-            elif ":" in line:
-                parts = line.split(":", 1)
-                formatted = f"**{parts[0].strip()}**: {parts[1].strip()}" if len(parts) > 1 else line
-            else:
-                formatted = line
-            out.append(formatted)
+            close_list()
+            out.append(f"<h1>{html.escape(clean_line)}</h1>")
+            name_written = True
             continue
 
-        # Job title lines (pipe-separated)
-        if "|" in line and not line.startswith("["):
-            out.extend([f"**{line}**", ""])
+        section = _display_section_key(clean_line)
+        if section:
+            close_list()
+            in_core_skills = section == "skills"
+            out.append(f"<h2>{html.escape(clean_line.rstrip(':').upper())}</h2>")
             continue
 
-        # Bullet points
-        if not in_core_skills and (line.startswith("•") or line.startswith("-") or line.startswith("*")):
-            bullet = re.sub(r"^[\•\-\*]\s+", "", line).strip()
-            out.append(f"• {bullet}")
+        if _is_contact_line(clean_line, profile):
+            close_list()
+            out.append(
+                f'<div class="contact">{html.escape(clean_line)}</div>'
+            )
             continue
 
-        # Contact info
-        if any(kw in line.lower() for kw in ["@", "phone", "email", "linkedin", "github"]):
-            out.extend([f"*{line}*", ""])
+        if not in_core_skills and BULLET_PREFIX_RE.match(clean_line):
+            if not list_open:
+                out.append("<ul>")
+                list_open = True
+            bullet = BULLET_PREFIX_RE.sub("", clean_line, count=1).strip()
+            out.append(f"<li>{html.escape(bullet)}</li>")
             continue
 
-        out.append(line)
+        close_list()
+        if in_core_skills and ":" in clean_line:
+            label, value = clean_line.split(":", 1)
+            out.append(
+                '<p class="skill-line"><strong>'
+                + html.escape(label.strip())
+                + ":</strong> "
+                + html.escape(value.strip())
+                + "</p>"
+            )
+            continue
 
+        if "|" in clean_line and not clean_line.startswith("["):
+            parts = [part.strip() for part in clean_line.split("|") if part.strip()]
+            rendered_parts = []
+            for index, part in enumerate(parts):
+                if index:
+                    rendered_parts.append('<span class="separator">|</span>')
+                cls = ' class="primary"' if index == 0 else ""
+                rendered_parts.append(f"<span{cls}>{html.escape(part)}</span>")
+            out.append('<div class="record">' + "".join(rendered_parts) + "</div>")
+            continue
+
+        out.append(f"<p>{html.escape(clean_line)}</p>")
+
+    close_list()
+    out.append("</article>")
     return "\n".join(out)

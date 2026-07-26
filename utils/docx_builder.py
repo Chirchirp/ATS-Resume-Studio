@@ -12,7 +12,8 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Inches, Pt, RGBColor
-from utils.ats_engine import extract_resume_profile
+from utils.ats_engine import canonical_resume_section, extract_resume_profile
+from utils.text_processing import BULLET_PREFIX_RE, normalize_resume_structure
 
 BOLD_PATTERN = re.compile(r"\*\*(.+?)\*\*")
 NAVY = "17365D"
@@ -33,6 +34,8 @@ class DocxParseabilityReport:
     contact_retained: bool
     roles_retained: int
     roles_expected: int
+    bullets_retained: int
+    bullets_expected: int
     table_count: int
     multi_column_sections: int
     drawing_count: int
@@ -49,6 +52,7 @@ class DocxParseabilityReport:
             and self.multi_column_sections == 0
             and self.drawing_count == 0
             and not self.header_footer_text_present
+            and self.bullets_retained >= self.bullets_expected
         )
 
 
@@ -110,6 +114,92 @@ def _set_bottom_border(paragraph, color: str = TEAL, size: str = "8"):
     borders.append(bottom)
 
 
+def _section_key(line: str) -> str | None:
+    return canonical_resume_section(line)
+
+
+def _next_numbering_id(numbering, tag: str, attribute: str) -> int:
+    values = []
+    for element in numbering.findall(qn(tag)):
+        value = element.get(qn(attribute))
+        if value and value.isdigit():
+            values.append(int(value))
+    return max(values, default=0) + 1
+
+
+def _create_resume_bullet_numbering(doc: Document) -> int:
+    """Create a real Word bullet definition with explicit ATS-resume geometry."""
+    numbering = doc.part.numbering_part.element
+    abstract_id = _next_numbering_id(
+        numbering, "w:abstractNum", "w:abstractNumId"
+    )
+    num_id = _next_numbering_id(numbering, "w:num", "w:numId")
+
+    abstract = OxmlElement("w:abstractNum")
+    abstract.set(qn("w:abstractNumId"), str(abstract_id))
+    multi = OxmlElement("w:multiLevelType")
+    multi.set(qn("w:val"), "singleLevel")
+    abstract.append(multi)
+    level = OxmlElement("w:lvl")
+    level.set(qn("w:ilvl"), "0")
+    start = OxmlElement("w:start")
+    start.set(qn("w:val"), "1")
+    level.append(start)
+    number_format = OxmlElement("w:numFmt")
+    number_format.set(qn("w:val"), "bullet")
+    level.append(number_format)
+    level_text = OxmlElement("w:lvlText")
+    level_text.set(qn("w:val"), "•")
+    level.append(level_text)
+    justification = OxmlElement("w:lvlJc")
+    justification.set(qn("w:val"), "left")
+    level.append(justification)
+
+    paragraph_properties = OxmlElement("w:pPr")
+    tabs = OxmlElement("w:tabs")
+    tab = OxmlElement("w:tab")
+    tab.set(qn("w:val"), "num")
+    tab.set(qn("w:pos"), "540")
+    tabs.append(tab)
+    paragraph_properties.append(tabs)
+    indent = OxmlElement("w:ind")
+    indent.set(qn("w:left"), "540")
+    indent.set(qn("w:hanging"), "280")
+    paragraph_properties.append(indent)
+    level.append(paragraph_properties)
+
+    run_properties = OxmlElement("w:rPr")
+    fonts = OxmlElement("w:rFonts")
+    fonts.set(qn("w:ascii"), "Arial")
+    fonts.set(qn("w:hAnsi"), "Arial")
+    run_properties.append(fonts)
+    level.append(run_properties)
+    abstract.append(level)
+    numbering.append(abstract)
+
+    number = OxmlElement("w:num")
+    number.set(qn("w:numId"), str(num_id))
+    abstract_ref = OxmlElement("w:abstractNumId")
+    abstract_ref.set(qn("w:val"), str(abstract_id))
+    number.append(abstract_ref)
+    numbering.append(number)
+    return num_id
+
+
+def _apply_resume_bullet_numbering(paragraph, num_id: int) -> None:
+    properties = paragraph._p.get_or_add_pPr()
+    existing = properties.find(qn("w:numPr"))
+    if existing is not None:
+        properties.remove(existing)
+    numbering = OxmlElement("w:numPr")
+    level = OxmlElement("w:ilvl")
+    level.set(qn("w:val"), "0")
+    number = OxmlElement("w:numId")
+    number.set(qn("w:val"), str(num_id))
+    numbering.extend([level, number])
+    properties.append(numbering)
+
+
 def _style_pipe_record(paragraph, line: str):
     """Style a pipe-delimited record without changing its ATS extraction order."""
     parts = [re.sub(r"\*\*", "", part.strip()) for part in line.split("|")]
@@ -128,6 +218,7 @@ def make_docx_from_text(text: str, name: str = "") -> bytes:
 
     Returns raw bytes suitable for st.download_button.
     """
+    text = normalize_resume_structure(text)
     doc = Document()
     doc.core_properties.title = "ATS-Optimized Resume"
     doc.core_properties.subject = "Single-column ATS-readable professional resume"
@@ -147,25 +238,26 @@ def make_docx_from_text(text: str, name: str = "") -> bytes:
     _set_style_font(style, "Arial", 10.25)
     pf = style.paragraph_format
     pf.alignment = WD_ALIGN_PARAGRAPH.LEFT
-    pf.line_spacing = 1.08
-    pf.space_after = Pt(2)
+    pf.line_spacing = 1.1
+    pf.space_after = Pt(3)
     pf.space_before = Pt(0)
 
     heading_style = doc.styles["Heading 1"]
     _set_style_font(heading_style, "Arial", 11.5, NAVY)
     heading_style.font.bold = True
     heading_style.font.all_caps = True
-    heading_style.paragraph_format.space_before = Pt(9)
+    heading_style.paragraph_format.space_before = Pt(10)
     heading_style.paragraph_format.space_after = Pt(4)
     heading_style.paragraph_format.keep_with_next = True
 
     bullet_style = doc.styles["List Bullet"]
     _set_style_font(bullet_style, "Arial", 10.25)
-    bullet_style.paragraph_format.left_indent = Inches(0.24)
-    bullet_style.paragraph_format.first_line_indent = Inches(-0.15)
+    bullet_style.paragraph_format.left_indent = Inches(0.375)
+    bullet_style.paragraph_format.first_line_indent = Inches(-0.194)
     bullet_style.paragraph_format.space_before = Pt(0)
-    bullet_style.paragraph_format.space_after = Pt(2)
-    bullet_style.paragraph_format.line_spacing = 1.08
+    bullet_style.paragraph_format.space_after = Pt(3)
+    bullet_style.paragraph_format.line_spacing = 1.1
+    bullet_num_id = _create_resume_bullet_numbering(doc)
 
     parsed_profile = extract_resume_profile(text)
     candidate_name = (name or parsed_profile.candidate_name).strip()
@@ -214,15 +306,9 @@ def make_docx_from_text(text: str, name: str = "") -> bytes:
             name_written = True
 
         # Section header
-        if (line.isupper() and len(line.split()) <= 4) or re.match(
-            r"^(PROFESSIONAL SUMMARY|CORE SKILLS|PROFESSIONAL EXPERIENCE|"
-            r"WORK EXPERIENCE|EDUCATION|CERTIFICATIONS?|TECHNICAL SKILLS|PROJECTS)[\s:]*$",
-            line,
-            re.I,
-        ):
-            in_core_skills = bool(
-                re.match(r"^(CORE SKILLS|TECHNICAL SKILLS)[\s:]*$", line, re.I)
-            )
+        section_key = _section_key(line)
+        if section_key:
+            in_core_skills = section_key == "skills"
             heading_text = re.sub(r"[#\*_\-]{2,}", "", line.strip().rstrip(":")).strip()
             h = doc.add_heading(heading_text, level=1)
             h.alignment = WD_ALIGN_PARAGRAPH.LEFT
@@ -258,23 +344,13 @@ def make_docx_from_text(text: str, name: str = "") -> bytes:
             continue
 
         # Bullet point
-        if not in_core_skills and re.match(r"^[\•\-\*]\s+", line):
-            bullet_text = re.sub(r"^[\•\-\*]\s+", "", line).strip()
+        if not in_core_skills and BULLET_PREFIX_RE.match(line):
+            bullet_text = BULLET_PREFIX_RE.sub("", line, count=1).strip()
             p = doc.add_paragraph(style="List Bullet")
+            _apply_resume_bullet_numbering(p, bullet_num_id)
             p.alignment = WD_ALIGN_PARAGRAPH.LEFT
             p.paragraph_format.widow_control = True
             _add_runs_with_bold(p, bullet_text)
-            i += 1
-            continue
-
-        # Job title / pipe line — entire line bold
-        if "|" in line and not line.startswith("["):
-            p = doc.add_paragraph()
-            p.paragraph_format.space_before = Pt(6)
-            p.paragraph_format.space_after = Pt(2)
-            p.paragraph_format.keep_with_next = True
-            p.alignment = WD_ALIGN_PARAGRAPH.LEFT
-            _style_pipe_record(p, line)
             i += 1
             continue
 
@@ -289,6 +365,17 @@ def make_docx_from_text(text: str, name: str = "") -> bytes:
             for run in p.runs:
                 run.font.size = Pt(9.25)
                 run.font.color.rgb = RGBColor.from_string(MUTED)
+            i += 1
+            continue
+
+        # Pipe-delimited role or qualification record.
+        if "|" in line and not line.startswith("["):
+            p = doc.add_paragraph()
+            p.paragraph_format.space_before = Pt(6)
+            p.paragraph_format.space_after = Pt(2)
+            p.paragraph_format.keep_with_next = True
+            p.alignment = WD_ALIGN_PARAGRAPH.LEFT
+            _style_pipe_record(p, line)
             i += 1
             continue
 
@@ -315,7 +402,14 @@ def extract_text_from_docx(payload: bytes) -> str:
         if not text:
             continue
         style_name = str(getattr(paragraph.style, "name", "") or "").lower()
-        if "list" in style_name and not re.match(r"^[•*\-–—]\s+", text):
+        has_numbering = bool(
+            paragraph._p.pPr is not None
+            and paragraph._p.pPr.find(qn("w:numPr")) is not None
+        )
+        if (
+            ("list" in style_name or has_numbering)
+            and not BULLET_PREFIX_RE.match(text)
+        ):
             text = "- " + text
         lines.append(text)
     for table in document.tables:
@@ -344,6 +438,7 @@ def validate_docx_roundtrip(
     payload: bytes,
 ) -> DocxParseabilityReport:
     """Verify that a generated DOCX retains ATS-readable candidate content."""
+    source_text = normalize_resume_structure(source_text)
     extracted = extract_text_from_docx(payload)
     document = Document(io.BytesIO(payload))
     source_tokens = _comparison_tokens(source_text)
@@ -382,6 +477,14 @@ def validate_docx_roundtrip(
     roles_retained = sum(
         _normalized_line(role.header) in extracted_normalized
         for role in source_profile.roles
+    )
+    bullets_expected = sum(
+        bool(re.match(r"^\s*[-*•▪◦●–—]\s+", line))
+        for line in source_text.splitlines()
+    )
+    bullets_retained = sum(
+        bool(re.match(r"^\s*[-*•▪◦●–—]\s+", line))
+        for line in extracted.splitlines()
     )
 
     section_rate = (
@@ -438,6 +541,11 @@ def validate_docx_roundtrip(
         issues.append(
             f"Only {roles_retained} of {roles_expected} role headers survived extraction."
         )
+    if bullets_retained < bullets_expected:
+        issues.append(
+            f"Only {bullets_retained} of {bullets_expected} bullet boundaries "
+            "survived DOCX extraction."
+        )
     if table_count:
         issues.append(
             f"Detected {table_count} table(s); table reading order can vary across parsers."
@@ -469,6 +577,8 @@ def validate_docx_roundtrip(
         contact_retained=contact_retained,
         roles_retained=roles_retained,
         roles_expected=roles_expected,
+        bullets_retained=bullets_retained,
+        bullets_expected=bullets_expected,
         table_count=table_count,
         multi_column_sections=multi_column_sections,
         drawing_count=drawing_count,
