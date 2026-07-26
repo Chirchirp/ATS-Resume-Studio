@@ -491,85 +491,162 @@ def generate_clarification_questions(
 def compact_grounding_context(
     ledger: EvidenceLedger,
     matrix: EvidenceMatrix,
-    max_chars: int = 12_000,
+    max_chars: int = 18_000,
+    max_item_chars: int = 700,
 ) -> str:
-    """Serialize one canonical candidate story plus requirement coverage."""
+    """Serialize a fair, strictly bounded candidate story and requirement map."""
+    max_chars = max(2_000, int(max_chars))
+    max_item_chars = max(160, int(max_item_chars))
     profile = ledger.profile
-    lines = [
+    coverage_budget = min(5_000, max(1_200, max_chars // 3))
+    coverage_lines = ["REQUIREMENT COVERAGE:"]
+    coverage_used = len(coverage_lines[0])
+    for row in matrix.rows[:18]:
+        evidence = ", ".join(row.evidence_ids) or "none"
+        requirement = re.sub(r"\s+", " ", row.requirement).strip()
+        if len(requirement) > 360:
+            requirement = requirement[:357].rsplit(" ", 1)[0] + "..."
+        line = (
+            f"[{row.id}] {row.priority} | {row.status} | "
+            f"evidence={evidence} | {requirement}"
+        )
+        if coverage_used + len(line) + 1 > coverage_budget:
+            coverage_lines.append("[Additional requirements omitted for token efficiency.]")
+            break
+        coverage_lines.append(line)
+        coverage_used += len(line) + 1
+    coverage_text = "\n".join(coverage_lines)
+    evidence_budget = max(800, max_chars - len(coverage_text) - 2)
+
+    lines: list[str] = []
+    used = 0
+
+    def clip(value: str, limit: int = max_item_chars) -> str:
+        clean = re.sub(r"\s+", " ", value).strip()
+        if len(clean) <= limit:
+            return clean
+        shortened = clean[: max(1, limit - 3)].rsplit(" ", 1)[0].strip()
+        return (shortened or clean[: max(1, limit - 3)]) + "..."
+
+    def add_line(line: str = "") -> bool:
+        nonlocal used
+        needed = len(line) + (1 if lines else 0)
+        if used + needed > evidence_budget:
+            return False
+        lines.append(line)
+        used += needed
+        return True
+
+    for line in (
         "STRUCTURED CANDIDATE PROFILE",
         "CANDIDATE EVIDENCE LEDGER (the only allowed factual source):",
-    ]
+    ):
+        add_line(line)
     if profile:
-        lines.extend(
-            [
-                f"source_hash={profile.source_hash}",
-                f"candidate_name={profile.candidate_name or 'not detected'}",
-                "section_order="
-                + (", ".join(profile.section_order) or "not detected"),
-                "contact="
-                + "; ".join(
+        profile_lines = (
+            f"source_hash={profile.source_hash}",
+            f"candidate_name={profile.candidate_name or 'not detected'}",
+            "section_order=" + (", ".join(profile.section_order) or "not detected"),
+            "contact="
+            + clip(
+                "; ".join(
                     profile.contact.emails
                     + profile.contact.phones
                     + profile.contact.links
                 ),
-                "declared_skills="
-                + (", ".join(profile.declared_skills) or "not detected"),
-                "estimated_experience_years="
-                + (
-                    str(profile.estimated_years)
-                    if profile.estimated_years is not None
-                    else "not reliably calculated"
-                ),
-                "",
-                "CAREER STORY (source order; preserve role boundaries):",
-            ]
+                500,
+            ),
+            "declared_skills="
+            + clip(", ".join(profile.declared_skills) or "not detected", 1_200),
+            "estimated_experience_years="
+            + (
+                str(profile.estimated_years)
+                if profile.estimated_years is not None
+                else "not reliably calculated"
+            ),
         )
+        for line in profile_lines:
+            add_line(line)
 
     included_ids: set[str] = set()
 
-    def append_item(item: EvidenceItem, indent: str = ""):
+    def append_item(item: EvidenceItem, indent: str = "") -> bool:
         if item.id in included_ids:
-            return
-        lines.append(
+            return True
+        role_ref = f" | role_id={item.role_id}" if item.role_id else ""
+        added = add_line(
             f"{indent}[{item.id}] type={item.item_type} | "
-            f"verification={item.verification} | {item.text}"
+            f"verification={item.verification}{role_ref} | {clip(item.text)}"
         )
-        included_ids.add(item.id)
+        if added:
+            included_ids.add(item.id)
+        return added
+
+    confirmed = [
+        item for item in ledger.items if item.verification == "user_confirmed"
+    ]
+    if confirmed:
+        add_line("")
+        add_line("USER-CONFIRMED CLARIFICATIONS (prioritize these verified facts):")
+        for item in confirmed:
+            if not append_item(item, "  "):
+                break
 
     if profile and profile.roles:
+        add_line("")
+        add_line("ROLE INDEX (preserve every exact header):")
         for role in profile.roles:
-            lines.append(
+            add_line(
                 f"[{role.id}] title={role.title or 'not separated'} | "
                 f"employer={role.employer or 'not separated'} | "
                 f"location={role.location or 'not supplied'} | "
                 f"dates={role.date_text or 'not supplied'} | "
                 f'exact_header="{role.header}"'
             )
-            for item in ledger.items:
-                if item.role_id == role.id:
-                    append_item(item, "  ")
-            if sum(len(line) + 1 for line in lines) >= max_chars:
-                lines.append(
-                    "[Additional lower-priority evidence omitted for token efficiency.]"
-                )
+        add_line("")
+        add_line("ROLE EVIDENCE (round-robin to preserve fair role coverage):")
+        role_queues = {
+            role.id: [
+                item
+                for item in ledger.items
+                if item.role_id == role.id and item.id not in included_ids
+            ]
+            for role in profile.roles
+        }
+        item_index = 0
+        capacity_exhausted = False
+        while any(item_index < len(items) for items in role_queues.values()):
+            added_this_round = False
+            for role in profile.roles:
+                items = role_queues[role.id]
+                if item_index >= len(items):
+                    continue
+                if not append_item(items[item_index], "  "):
+                    capacity_exhausted = True
+                    break
+                added_this_round = True
+            if capacity_exhausted or not added_this_round:
                 break
+            item_index += 1
     elif profile:
-        lines.append("[No reliable role hierarchy detected; inspect unassigned evidence.]")
+        add_line("[No reliable role hierarchy detected; inspect unassigned evidence.]")
 
     if profile and profile.projects:
-        lines.append("\nPROJECTS:")
+        add_line("")
+        add_line("PROJECTS:")
         for project in profile.projects:
-            lines.append(f'[{project.id}] exact_title="{project.title}"')
+            if not add_line(f'[{project.id}] exact_title="{clip(project.title, 500)}"'):
+                break
             for item in ledger.items:
                 if item.role_id == project.id:
-                    append_item(item, "  ")
+                    if not append_item(item, "  "):
+                        break
 
     section_labels = (
         ("summary", "SUMMARY"),
         ("skills", "SKILLS"),
         ("education", "EDUCATION"),
         ("certifications", "CERTIFICATIONS"),
-        ("clarification", "USER-CONFIRMED CLARIFICATIONS"),
         ("other", "CONTACT / OTHER SOURCE LINES"),
     )
     for section, label in section_labels:
@@ -580,26 +657,62 @@ def compact_grounding_context(
         ]
         if not section_items:
             continue
-        lines.append(f"\n{label}:")
-        for item in section_items:
-            append_item(item, "  ")
-            if sum(len(line) + 1 for line in lines) >= max_chars:
-                lines.append(
-                    "[Additional lower-priority evidence omitted for token efficiency.]"
-                )
-                break
-        if sum(len(line) + 1 for line in lines) >= max_chars:
+        if not add_line("") or not add_line(f"{label}:"):
             break
+        for item in section_items:
+            if not append_item(item, "  "):
+                break
 
     for item in ledger.items:
-        if item.id not in included_ids and sum(len(line) + 1 for line in lines) < max_chars:
-            append_item(item, "  ")
+        if item.id not in included_ids and not append_item(item, "  "):
+            break
 
-    lines.append("\nREQUIREMENT COVERAGE:")
-    for row in matrix.rows[:15]:
-        evidence = ", ".join(row.evidence_ids) or "none"
-        lines.append(f"[{row.id}] {row.priority} | {row.status} | evidence={evidence} | {row.requirement}")
-    return "\n".join(lines)
+    if len(included_ids) < len(ledger.items):
+        add_line("[Additional lower-priority evidence omitted for model capacity.]")
+    result = "\n".join(lines) + "\n\n" + coverage_text
+    return result[:max_chars]
+
+
+def compact_requirement_context(
+    matrix: EvidenceMatrix,
+    *,
+    job_title: str = "",
+    max_chars: int = 6_000,
+) -> str:
+    """Replace a potentially huge raw JD with extracted, auditable requirements."""
+    max_chars = max(1_000, int(max_chars))
+    lines = [
+        "EXTRACTED JOB CONTEXT (derived deterministically from the supplied JD):",
+        f"Target title: {job_title or 'Not reliably extracted'}",
+    ]
+    used = sum(len(line) + 1 for line in lines)
+    for row in matrix.rows[:24]:
+        requirement = re.sub(r"\s+", " ", row.requirement).strip()
+        if len(requirement) > 420:
+            requirement = requirement[:417].rsplit(" ", 1)[0] + "..."
+        line = f"[{row.id}] {row.priority} | {requirement}"
+        if used + len(line) + 1 > max_chars:
+            lines.append("[Additional requirements omitted for model capacity.]")
+            break
+        lines.append(line)
+        used += len(line) + 1
+    return "\n".join(lines)[:max_chars]
+
+
+def compact_optional_draft(text: str, max_chars: int = 12_000) -> str:
+    """Bound optional editorial context; candidate evidence remains authoritative."""
+    clean = (text or "").strip()
+    if len(clean) <= max_chars:
+        return clean
+    head_chars = int(max_chars * 0.7)
+    tail_chars = max_chars - head_chars - 80
+    head = clean[:head_chars].rsplit("\n", 1)[0]
+    tail = clean[-tail_chars:].split("\n", 1)[-1]
+    return (
+        head
+        + "\n[Middle of previous draft omitted for model capacity; use candidate evidence.]\n"
+        + tail
+    )
 
 
 def achievement_grounding_context(

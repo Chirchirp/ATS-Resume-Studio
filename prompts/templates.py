@@ -232,12 +232,22 @@ def build_grounded_resume_prompt(
     strategy_context: str = "",
     role_bullet_plan: str = "",
     previous_draft: str = "",
+    target_pages: int = 3,
 ) -> str:
     """Build a full-resume prompt that refuses JD-only generation."""
     if not re.search(r"\[E\d{3}\]", candidate_evidence):
         raise ValueError(
             "Full resume generation requires candidate evidence with stable evidence IDs."
         )
+    target_pages = 4 if int(target_pages) >= 4 else 3
+    length_guidance = (
+        "Target up to 4 Word pages and approximately 1,500–2,100 words. "
+        "Never exceed four pages and never pad weak or repetitive content."
+        if target_pages == 4
+        else
+        "Target approximately 3 Word pages and 1,100–1,600 words. "
+        "Use fewer words when the verified evidence does not justify three full pages."
+    )
     return (
         "Create an ATS-readable resume using the candidate evidence below.\n\n"
         "SOURCE-OF-TRUTH RULES:\n"
@@ -272,6 +282,9 @@ def build_grounded_resume_prompt(
         "specific object, and verified context over formulaic action-result templates.\n"
         "- Follow the deterministic role bullet plan. Give every listed role its exact "
         "header and target number of bullets; do not merge, rename, or omit roles.\n"
+        "- "
+        + length_guidance
+        + "\n"
         "- Every experience or project bullet must be followed by an evidence line in this form:\n"
         "  Evidence: E### — \"short exact phrase from that evidence item\"\n"
         "- Follow each Evidence line with one relevance annotation:\n"

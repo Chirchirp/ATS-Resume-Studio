@@ -61,6 +61,7 @@ class GroundingAndDocumentTests(unittest.TestCase):
                 "[E001] section=experience | verification=source_explicit | "
                 "Prepared weekly operational reports."
             ),
+            target_pages=4,
         )
         lowered = prompt.lower()
         self.assertIn("candidate evidence is the only source", lowered)
@@ -71,6 +72,7 @@ class GroundingAndDocumentTests(unittest.TestCase):
         self.assertIn("natural professional voice", lowered)
         self.assertIn("do not repeat the same lead verb", lowered)
         self.assertIn("deterministic role bullet plan", lowered)
+        self.assertIn("never exceed four pages", lowered)
         self.assertNotIn("reasonable to infer", lowered)
         self.assertNotIn("quantify everything", lowered)
 

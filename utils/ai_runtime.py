@@ -24,7 +24,7 @@ TASK_OUTPUT_LIMITS = {
     "cover_letter": 1200,
     "analysis": 2200,
     "recruiter": 2800,
-    "resume": 3200,
+    "resume": 4600,
 }
 
 GROQ_MODEL_FALLBACKS = {

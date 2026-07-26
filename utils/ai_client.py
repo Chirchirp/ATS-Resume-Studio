@@ -217,9 +217,11 @@ def _safe_error(exc: Exception, provider: str, model: str = "") -> AIClientError
     ):
         return error(
             f"The resume and job-description request is too large for "
-            f"{provider_name}{model_label}. Shorten the source documents or generate "
-            "without the previous draft.",
+            f"{provider_name}{model_label}. The app will retry with a bounded "
+            "evidence-preserving context; if that also fails, shorten unusually long "
+            "clarification answers.",
             category="request_too_large",
+            retryable=True,
         )
     if status_code == 429 or any(
         term in combined
