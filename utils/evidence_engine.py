@@ -41,6 +41,148 @@ CREDENTIAL_RE = re.compile(
     re.I,
 )
 
+_COVERAGE_NOISE_TERMS = {
+    "across",
+    "analyse",
+    "analyze",
+    "compile",
+    "comprehensive",
+    "continuous",
+    "deliver",
+    "delivering",
+    "demonstrate",
+    "develop",
+    "ensure",
+    "including",
+    "maintain",
+    "methodologies",
+    "mindset",
+    "organisational",
+    "proficiency",
+    "provide",
+    "r",
+    "support",
+    "technical",
+    "them",
+    "through",
+    "throughout",
+    "tools",
+    "understand",
+}
+
+_COVERAGE_CONCEPT_PATTERNS = {
+    "sql": (r"\bsql\b",),
+    "excel": (r"\b(?:ms|microsoft)?\s*excel\b",),
+    "smartsheet": (r"\bsmartsheet\b",),
+    "data visualization": (
+        r"\bdata\s+visuali[sz]",
+        r"\bpower\s*bi\b",
+        r"\bdashboards?\b",
+        r"\bscorecards?\b",
+    ),
+    "data cleaning": (
+        r"\bdata\s+clean",
+        r"\bcleaned\b",
+        r"\bstandardized\b",
+        r"\bstandardised\b",
+    ),
+    "data flow": (
+        r"\bdata\s+flow",
+        r"\bsource[-\s]to[-\s]report\b",
+        r"\blineage\b",
+    ),
+    "external collaboration": (
+        r"\bexternal\s+partners?\b",
+        r"\bexternal\s+research\s+teams?\b",
+        r"\br\s*&\s*d\b",
+        r"\bresearch\s+and\s+development\b",
+    ),
+    "production context": (
+        r"\bproduction\b",
+        r"\bprocessing\b",
+        r"\boperations?\b",
+    ),
+    "ad hoc analysis": (r"\bad[\s-]+hoc\b",),
+    "decision support": (
+        r"\bdecision[-\s]making\b",
+        r"\bdecision\s+support\b",
+        r"\bactionable\s+(?:insights?|recommendations?)\b",
+        r"\bmanagement\s+reviews?\b",
+    ),
+    "management reporting": (
+        r"\bmanagement\s+(?:reports?|reporting|updates?|reviews?)\b",
+        r"\bupdate\s+reports?\b",
+        r"\breporting\s+workflows?\b",
+    ),
+    "recommendations": (r"\brecommendations?\b",),
+    "process improvement": (
+        r"\bcontinuous\s+improvement\b",
+        r"\bprocess\s+improvement\b",
+        r"\bprocess\s+optimi[sz]",
+        r"\bimprovement\s+initiatives?\b",
+    ),
+    "stakeholder collaboration": (
+        r"\bstakeholders?\b",
+        r"\bcross[-\s]functional\b",
+        r"\bpartnered\s+with\b",
+        r"\bbusiness\s+users?\b",
+        r"\bacross\s+departments?\b",
+    ),
+    "requirements gathering": (
+        r"\bgather(?:ed|ing)?\s+requirements?\b",
+        r"\brequirements?\s+gathering\b",
+    ),
+    "analytical translation": (
+        r"\btranslate(?:d|s|ing)?\b",
+        r"\banalytical\s+solutions?\b",
+        r"\breport\s+specifications?\b",
+    ),
+    "data quality controls": (
+        r"\bdata[-\s]quality\b",
+        r"\bvalidation\b",
+        r"\bverification\b",
+        r"\breconcil",
+        r"\bdata\s+integrity\b",
+    ),
+    "documentation": (
+        r"\bdocument(?:ed|ation|ing)?\b",
+        r"\bdata\s+sources?\b",
+        r"\bprocedures?\b",
+    ),
+    "user training": (
+        r"\btraining\b",
+        r"\btrained\b",
+        r"\bend[-\s]users?\b",
+        r"\buser\s+support\b",
+        r"\bsupervisors?\b",
+    ),
+    "hse compliance": (
+        r"\bhse\b",
+        r"\bhealth\s+and\s+safety\b",
+    ),
+    "phytosanitary compliance": (r"\bphytosanitary\b",),
+    "pressure handling": (r"\bunder\s+pressure\b", r"\btight\s+deadlines?\b"),
+    "integrity": (r"\bintegrity\b", r"\bintellectual\s+honesty\b"),
+}
+
+
+def _coverage_terms(text: str, extracted_terms) -> set[str]:
+    """Return high-signal requirement/evidence concepts for explainable matching."""
+    lowered = re.sub(r"\s+", " ", text.lower())
+    concepts = {
+        concept
+        for concept, patterns in _COVERAGE_CONCEPT_PATTERNS.items()
+        if any(re.search(pattern, lowered) for pattern in patterns)
+    }
+    if concepts:
+        return concepts
+    return {
+        normalized
+        for term in extracted_terms
+        if (normalized := _normalize_term(term))
+        and normalized not in _COVERAGE_NOISE_TERMS
+    }
+
 
 @dataclass(frozen=True)
 class EvidenceItem:
@@ -335,10 +477,10 @@ def build_evidence_ledger(
 
 
 def _match_requirement(requirement: Requirement, ledger: EvidenceLedger, row_id: str) -> RequirementEvidence:
-    required_terms = {_normalize_term(term) for term in requirement.terms}
+    required_terms = _coverage_terms(requirement.text, requirement.terms)
     ranked: list[tuple[float, EvidenceItem, set[str]]] = []
     for item in ledger.items:
-        item_terms = {_normalize_term(term) for term in item.terms}
+        item_terms = _coverage_terms(item.text, item.terms)
         matched = required_terms & item_terms
         ratio = len(matched) / len(required_terms) if required_terms else 0.0
         if matched:
@@ -363,31 +505,32 @@ def _match_requirement(requirement: Requirement, ledger: EvidenceLedger, row_id:
         selected: list[tuple[float, EvidenceItem, set[str]]] = []
     else:
         selected = ranked[:3]
+        coverage_entries = ranked[:8]
         best = selected[0][0] if selected else 0.0
         aggregate_matched = (
-            set().union(*(entry[2] for entry in selected))
-            if selected
+            set().union(*(entry[2] for entry in coverage_entries))
+            if coverage_entries
             else set()
         )
         demonstrated_matched = (
             set().union(
                 *(
                     entry[2]
-                    for entry in selected
+                    for entry in coverage_entries
                     if entry[1].section in demonstrated_sections
                 )
             )
             if any(
                 entry[1].section in demonstrated_sections
-                for entry in selected
+                for entry in coverage_entries
             )
             else set()
         )
         demonstrated_ratio = len(demonstrated_matched) / len(required_terms)
         aggregate_ratio = len(aggregate_matched) / len(required_terms)
-        if demonstrated_ratio >= 0.8:
+        if demonstrated_ratio >= 0.67:
             status = "direct"
-        elif aggregate_ratio >= 0.8 or best >= 0.8:
+        elif aggregate_ratio >= 0.67 or best >= 0.67:
             status = "equivalent"
         elif aggregate_ratio >= 0.35 or best >= 0.35:
             status = "transferable"
@@ -415,6 +558,41 @@ def _match_requirement(requirement: Requirement, ledger: EvidenceLedger, row_id:
         missing_terms=tuple(sorted(missing_terms)),
         explanation=explanations[status],
     )
+
+
+def candidate_facing_grounding_context(
+    ledger: EvidenceLedger,
+    matrix: EvidenceMatrix,
+    *,
+    alignment_score: int | None = None,
+    confidence: str = "",
+    max_evidence_per_requirement: int = 3,
+) -> str:
+    """Serialize exact candidate facts without exposing internal audit identifiers."""
+    by_id = ledger.by_id()
+    lines = []
+    if alignment_score is not None:
+        lines.append(
+            f"Deterministic Job Alignment Score: {alignment_score}/100"
+            + (f" ({confidence} confidence)" if confidence else "")
+        )
+    lines.append("Requirement coverage:")
+    for row in matrix.rows:
+        evidence = [
+            by_id[item_id].text
+            for item_id in row.evidence_ids[:max_evidence_per_requirement]
+            if item_id in by_id
+        ]
+        lines.append(f"- {row.status.upper()}: {row.requirement}")
+        if evidence:
+            lines.extend(f'  Candidate source: "{item}"' for item in evidence)
+        else:
+            lines.append("  Candidate source: not evidenced")
+    lines.append("Additional candidate facts:")
+    for item in ledger.items[:40]:
+        role = f" | {item.role}" if item.role else ""
+        lines.append(f'- {item.section}{role}: "{item.text}"')
+    return "\n".join(lines)
 
 
 def build_evidence_matrix(jd_text: str, ledger: EvidenceLedger) -> EvidenceMatrix:
@@ -1072,7 +1250,14 @@ def strip_generation_annotations(generated_text: str) -> str:
             ("evidence:", "status:", "jd match:")
         )
     ]
-    return re.sub(r"\n{3,}", "\n\n", "\n".join(kept)).strip()
+    visible = "\n".join(kept)
+    visible = re.sub(
+        r"\s*(?:\[(?:E|R|ROLE)\d{3}\]|\((?:E|R|ROLE)\d{3}\))",
+        "",
+        visible,
+        flags=re.I,
+    )
+    return re.sub(r"\n{3,}", "\n\n", visible).strip()
 
 
 def allocate_role_bullet_targets(
@@ -1094,16 +1279,22 @@ def allocate_role_bullet_targets(
         return ()
 
     preferred = max(1, min(maximum_per_role, int(preferred_per_role)))
-    role_items = {
-        role.id: [
+    role_items = {}
+    for role in ledger.profile.roles:
+        bullets = [
             item
             for item in ledger.items
             if item.role_id == role.id
             and item.section == "experience"
-            and item.item_type in {"bullet", "role_detail", "user_confirmed"}
+            and item.item_type in {"bullet", "user_confirmed"}
         ]
-        for role in ledger.profile.roles
-    }
+        role_items[role.id] = bullets or [
+            item
+            for item in ledger.items
+            if item.role_id == role.id
+            and item.section == "experience"
+            and item.item_type == "role_detail"
+        ]
     relevant_ids = {
         evidence_id
         for row in matrix.rows
@@ -1320,7 +1511,12 @@ def _canonicalize_bullet_blocks(
                 ledger,
                 jd_text,
             )
-            unsafe = any(issue.severity == "high" for issue in bullet_report.issues)
+            claim_terms = _content_terms(_clean_evidence_line(raw))
+            grounded_overlap = bool(claim_terms.intersection(evidence.terms))
+            unsafe = (
+                not grounded_overlap
+                or any(issue.severity == "high" for issue in bullet_report.issues)
+            )
             output.extend(
                 _canonical_bullet_block(
                     raw,
@@ -1419,9 +1615,19 @@ def _replace_experience_section(
             for item in ledger.items
             if item.role_id == plan.role_id
             and item.section == "experience"
-            and item.item_type in {"bullet", "role_detail", "user_confirmed"}
+            and item.item_type in {"bullet", "user_confirmed"}
             and item.id not in used_evidence
         ]
+        if len(source_items) < max(0, plan.target - len(selected)):
+            source_items.extend(
+                item
+                for item in ledger.items
+                if item.role_id == plan.role_id
+                and item.section == "experience"
+                and item.item_type == "role_detail"
+                and item.id not in used_evidence
+                and item not in source_items
+            )
         source_items.sort(
             key=lambda item: (
                 _requirement_for_evidence(item.id, matrix) is None,
@@ -1490,7 +1696,8 @@ _CAPABILITY_PATTERNS = (
     (r"\bstakeholder (?:management|engagement|collaboration)\b", "Stakeholder Collaboration"),
     (r"\b(?:training|trained|end-user support|user support)\b", "Training & User Support"),
     (r"\b(?:documentation|documented|data dictionaries?)\b", "Documentation"),
-    (r"\b(?:compliance|hse|hygiene|phytosanitary)\b", "Compliance"),
+    (r"\bhse reporting\b", "HSE Reporting"),
+    (r"\b(?:phytosanitary|hygiene) compliance\b", "Phytosanitary & Hygiene Compliance"),
     (r"\b(?:forecasting|forecasted|budgeting|budgeted)\b", "Forecasting & Budgeting"),
     (r"\b(?:project coordination|project management)\b", "Project Delivery"),
     (r"\bdecision[- ]making\b", "Decision Support"),
@@ -1622,6 +1829,8 @@ def _source_backed_skill_lines(ledger: EvidenceLedger) -> list[str]:
     for pattern, label in _CAPABILITY_PATTERNS:
         if not re.search(pattern, source_text, re.I):
             continue
+        if _normalize_term(label) in used:
+            continue
         # A polished label may contain a known ATS skill phrase. Retain it only
         # when that phrase is also present in the candidate source; otherwise a
         # harmless grammatical normalization could incorrectly block download.
@@ -1654,7 +1863,12 @@ def _evidence_summary_sentence(text: str) -> str:
         return clean.rstrip(".") + "." if clean else ""
     lead = match.group(1).lower()
     if lead in _VERB_TO_GERUND:
-        return "Has " + lead + match.group(2).rstrip(".") + "."
+        return (
+            "Demonstrated experience includes "
+            + _VERB_TO_GERUND[lead]
+            + match.group(2).rstrip(".")
+            + "."
+        )
     return clean.rstrip(".") + "."
 
 
@@ -1761,6 +1975,14 @@ def enhance_resume_core_sections(
         return generated_text
     target_pages = max(1, min(4, int(target_pages)))
     prefix, sections, original_order = _sectioned_resume(generated_text)
+    source_prefix = [profile.candidate_name] if profile.candidate_name else []
+    source_prefix.extend(
+        item.text
+        for item in ledger.items
+        if item.section == "other" and item.item_type == "contact_or_header"
+    )
+    if source_prefix:
+        prefix = list(dict.fromkeys(value for value in source_prefix if value.strip()))
 
     summary_text = " ".join(
         line.strip() for line in sections.get("summary", []) if line.strip()
@@ -1773,19 +1995,22 @@ def enhance_resume_core_sections(
     generic_opening = bool(
         re.search(
             r"\b(?:results-driven|dynamic professional|proven track record|"
-            r"seasoned professional|highly motivated)\b",
+            r"seasoned professional|highly motivated|proven ability|expert in)\b",
             summary_text,
             re.I,
         )
     )
-    if (
+    premium_summary = _premium_summary_lines(ledger)
+    if premium_summary:
+        # The summary is the app's most visible narrative. Keep it candidate-specific
+        # by rebuilding from source summary and exact role evidence on every pass.
+        sections["summary"] = premium_summary
+    elif (
         sentence_count < min_sentences
         or len(summary_text.split()) < min_words
         or generic_opening
     ):
-        premium_summary = _premium_summary_lines(ledger)
-        if premium_summary:
-            sections["summary"] = premium_summary
+        sections.pop("summary", None)
 
     skill_lines = _source_backed_skill_lines(ledger)
     if skill_lines:
@@ -1978,10 +2203,16 @@ def build_safe_evidence_resume(
     safe_resume = re.sub(
         r"\n{3,}", "\n\n", seed + "\n" + "\n".join(tail)
     ).strip()
-    return enhance_resume_core_sections(
+    enhanced = enhance_resume_core_sections(
         safe_resume,
         ledger,
         target_pages=target_pages,
+    )
+    return repair_grounded_resume_draft(
+        enhanced,
+        ledger,
+        jd_text,
+        plans,
     )
 
 

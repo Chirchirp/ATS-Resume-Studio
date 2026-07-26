@@ -115,6 +115,25 @@ class AtsEngineTests(unittest.TestCase):
             "Smartsheet Core Product Training | 2021",
         )
 
+    def test_combined_training_heading_stops_certification_capture(self):
+        profile = extract_resume_profile(
+            "Amina Kamau\n\n"
+            "CERTIFICATIONS\n"
+            "Power BI Data Analyst Associate | 2024\n\n"
+            "TRAINING & PROFESSIONAL DEVELOPMENT\n"
+            "Smartsheet Core Product Training | 2021"
+        )
+
+        self.assertEqual(len(profile.certification_records), 1)
+        self.assertEqual(
+            profile.certification_records[0].text,
+            "Power BI Data Analyst Associate | 2024",
+        )
+        self.assertEqual(
+            profile.sections["training"],
+            "Smartsheet Core Product Training | 2021",
+        )
+
     def test_extracts_structured_job_requirements(self):
         profile = extract_job_profile(JD)
         self.assertEqual(profile.title, "Senior Data Analyst")

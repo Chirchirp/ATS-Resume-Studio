@@ -5,12 +5,12 @@ components/tab_analyze.py — Analyze tab: JD + resume input, keyword match, exp
 import streamlit as st
 from prompts.templates import (
     BASE_SYSTEM_PROMPT,
-    EXPERT_ANALYSIS_PROMPT,
     INFER_FIELD_PROMPT,
     RESUME_QUALITY_SYSTEM_PROMPT,
     RESUME_WRITER_SYSTEM_PROMPT,
     build_achievement_prompt,
     build_achievement_refinement_prompt,
+    build_expert_analysis_prompt,
     build_resume_quality_prompt,
 )
 from utils.ats_engine import (
@@ -24,6 +24,7 @@ from utils.evidence_engine import (
     achievement_grounding_context,
     build_evidence_ledger,
     build_evidence_matrix,
+    candidate_facing_grounding_context,
     compact_grounding_context,
     validate_achievement_claims,
 )
@@ -31,6 +32,7 @@ from utils.logger import log_usage
 from utils.resume_quality_engine import ResumeQualityReport, analyze_resume_quality
 from utils.text_processing import (
     extract_text_from_pdf,
+    sanitize_candidate_feedback,
     sanitize_display_text,
 )
 from config.settings import get_provider_label, is_api_key_set
@@ -103,6 +105,24 @@ def _quality_findings_context(report: ResumeQualityReport) -> str:
         for issue in report.issues[:12]
     )
     return "\n".join(findings)
+
+
+def _alignment_findings_context(report, matrix) -> str:
+    lines = [
+        f"Authoritative Job Alignment Score: {report.score}/100",
+        f"Confidence: {report.confidence}",
+    ]
+    lines.extend(
+        f"- {dimension.label}: {dimension.score:.1f}/{dimension.maximum:.0f} — "
+        f"{dimension.explanation}"
+        for dimension in report.dimensions
+    )
+    lines.append("Authoritative requirement statuses:")
+    lines.extend(
+        f"- {row.status.upper()}: {row.requirement}"
+        for row in matrix.rows
+    )
+    return "\n".join(lines)
 
 
 def _render_quality_report(
@@ -426,7 +446,14 @@ def render_tab_analyze(prefs: dict):
         with st.spinner("Checking structure, language, dates, and career continuity…"):
             quality_report = analyze_resume_quality(resume_v)
         ai_feedback = ""
-        if prefs["api_ready"]:
+        if quality_report.score >= 95 and not quality_report.issues:
+            ai_feedback = (
+                "## Editorial verdict\n"
+                "No definite line-level correction is required. The deterministic "
+                "review found no material grammar, chronology, structure, or plain-text "
+                "ATS issue; avoid changing correct wording merely to make it sound different."
+            )
+        elif prefs["api_ready"]:
             quality_ledger = build_evidence_ledger(resume_v)
             quality_matrix = build_evidence_matrix("", quality_ledger)
             quality_prompt = build_resume_quality_prompt(
@@ -437,11 +464,14 @@ def render_tab_analyze(prefs: dict):
                 ),
             )
             with st.spinner("Adding line-level grammar and editorial feedback…"):
-                ai_feedback = _call_ai(
-                    quality_prompt,
-                    system_prompt=RESUME_QUALITY_SYSTEM_PROMPT,
-                    temperature=0.1,
-                    task="resume_quality",
+                ai_feedback = sanitize_candidate_feedback(
+                    _call_ai(
+                        quality_prompt,
+                        system_prompt=RESUME_QUALITY_SYSTEM_PROMPT,
+                        temperature=0.1,
+                        task="resume_quality",
+                    ),
+                    resume_v,
                 )
         st.session_state["last_resume_quality"] = quality_report
         st.session_state["last_resume_quality_ai"] = ai_feedback
@@ -466,13 +496,34 @@ def render_tab_analyze(prefs: dict):
         analysis_matrix = build_evidence_matrix(
             st.session_state.get("jd", ""), analysis_ledger
         )
-        prompt = EXPERT_ANALYSIS_PROMPT.format(
+        analysis_report = analyze_alignment(
+            st.session_state.get("jd", ""),
+            st.session_state.get("resume", ""),
+        )
+        candidate_context = candidate_facing_grounding_context(
+            analysis_ledger,
+            analysis_matrix,
+            alignment_score=analysis_report.score,
+            confidence=analysis_report.confidence,
+        )
+        prompt = build_expert_analysis_prompt(
             fields=fields_str,
             jd=st.session_state.get("jd", ""),
-            text=compact_grounding_context(analysis_ledger, analysis_matrix),
+            candidate_context=candidate_context,
+            alignment_context=_alignment_findings_context(
+                analysis_report, analysis_matrix
+            ),
         )
         with st.spinner("Running expert analysis…"):
-            analysis = _call_ai(prompt, task="analysis")
+            analysis = sanitize_candidate_feedback(
+                _call_ai(
+                    prompt,
+                    system_prompt=BASE_SYSTEM_PROMPT,
+                    temperature=0.1,
+                    task="analysis",
+                ),
+                st.session_state.get("resume", ""),
+            )
 
         if analysis:
             st.markdown(f"### 🧠 Expert Analysis — *{fields_str}*")

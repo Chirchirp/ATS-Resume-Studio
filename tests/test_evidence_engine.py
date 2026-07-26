@@ -50,6 +50,31 @@ BSc Statistics | Example University | 2021
 
 
 class EvidenceEngineTests(unittest.TestCase):
+    def test_semantic_requirement_coverage_uses_demonstrated_concepts(self):
+        resume = """Amina Kamau
+PROFESSIONAL EXPERIENCE
+Senior Data Analyst | Greenfields Produce | 2021 - Present
+- Built SQL and Power BI reporting workflows for weekly management reviews.
+- Partnered with external research teams to document source-to-report data flows.
+- Gathered requirements from business users and translated them into report specifications.
+- Facilitated dashboard training for supervisors and documented refresh procedures.
+Data Analyst | HarvestLink | 2017 - 2020
+- Maintained Smartsheet trackers for process improvement initiatives.
+"""
+        jd = """Use SQL, Excel, Smartsheet and data visualisation tools.
+Analyse production data flows and work with external R&D partners.
+Collaborate with stakeholders to gather requirements and translate business needs.
+Train end-users on dashboards and analytical outputs."""
+        ledger = build_evidence_ledger(resume)
+        matrix = build_evidence_matrix(jd, ledger)
+
+        statuses = [row.status for row in matrix.rows]
+        self.assertGreaterEqual(
+            sum(status in {"direct", "equivalent"} for status in statuses),
+            3,
+        )
+        self.assertNotIn("missing", statuses)
+
     def test_ledger_has_stable_ids_and_role_provenance(self):
         first = build_evidence_ledger(RESUME)
         second = build_evidence_ledger(RESUME)
@@ -478,6 +503,32 @@ class EvidenceEngineTests(unittest.TestCase):
         for plan in plans:
             self.assertIn(plan.role_header, visible)
 
+    def test_role_plan_prefers_real_bullets_over_role_detail_lines(self):
+        resume = (
+            "Jane Doe\njane@example.com\n\n"
+            "PROFESSIONAL EXPERIENCE\n"
+            "Data Analyst | Acme Ltd | 2022 - Present\n"
+            "Analytics & BI: SQL, Power BI, Excel\n"
+            "- Built weekly SQL reports.\n"
+            "- Validated operational datasets.\n"
+        )
+        ledger = build_evidence_ledger(resume)
+        matrix = build_evidence_matrix(JD, ledger)
+        plans = allocate_role_bullet_targets(
+            ledger, matrix, preferred_per_role=2
+        )
+        repaired = repair_grounded_resume_draft(
+            "PROFESSIONAL EXPERIENCE",
+            ledger,
+            JD,
+            plans,
+        )
+        visible = strip_generation_annotations(repaired)
+
+        self.assertIn("- Built weekly SQL reports.", visible)
+        self.assertIn("- Validated operational datasets.", visible)
+        self.assertNotIn("- Analytics & BI:", visible)
+
     def test_safe_recovery_is_downloadable_and_source_only(self):
         ledger = build_evidence_ledger(RESUME)
         matrix = build_evidence_matrix(JD, ledger)
@@ -487,6 +538,45 @@ class EvidenceEngineTests(unittest.TestCase):
         self.assertTrue(report.is_download_safe, report.issues)
         self.assertIn("Data Analyst | Acme Ltd | 2022 - Present", safe)
         self.assertNotIn("AWS", strip_generation_annotations(safe))
+
+    def test_visible_resume_strips_inline_internal_ids(self):
+        visible = strip_generation_annotations(
+            "- Built weekly SQL reports. (E003)\n"
+            '  Evidence: E003 — "Built weekly SQL reports."\n'
+            '  JD Match: R001 — "SQL required"'
+        )
+
+        self.assertNotIn("E003", visible)
+        self.assertNotIn("R001", visible)
+        self.assertEqual(visible, "- Built weekly SQL reports.")
+
+    def test_premium_rebuilds_identity_and_generic_summary_from_source(self):
+        ledger = build_evidence_ledger(RESUME)
+        premium = enhance_resume_core_sections(
+            "Jane Doe\n"
+            "- +1 555 999 9999\n\n"
+            "PROFESSIONAL SUMMARY\n"
+            "Expert in analytics with proven ability to create actionable insights.\n\n"
+            "PROFESSIONAL EXPERIENCE\n"
+            "Data Analyst | Acme Ltd | 2022 - Present\n"
+            "- +1 555 999 9999\n",
+            ledger,
+            target_pages=3,
+        )
+        matrix = build_evidence_matrix(JD, ledger)
+        plans = allocate_role_bullet_targets(ledger, matrix)
+        repaired = repair_grounded_resume_draft(
+            premium,
+            ledger,
+            JD,
+            plans,
+        )
+        visible = strip_generation_annotations(repaired)
+
+        self.assertIn("jane@example.com", visible.split("PROFESSIONAL SUMMARY", 1)[0])
+        self.assertNotIn("999 9999", visible)
+        self.assertNotIn("Expert in analytics", visible)
+        self.assertIn("Built Python and SQL reporting pipelines", visible)
 
     def test_premium_core_repair_restores_depth_skills_and_qualifications(self):
         resume = RESUME.replace(
