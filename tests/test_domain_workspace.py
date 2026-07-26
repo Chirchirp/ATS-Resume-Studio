@@ -1,6 +1,10 @@
 import unittest
 
-from utils.domain_profiles import infer_domain_context
+from utils.domain_profiles import (
+    deterministic_field_label,
+    infer_domain_context,
+    normalize_field_label,
+)
 from utils.evidence_engine import build_evidence_ledger, build_evidence_matrix
 from utils.workspace_engine import (
     build_interview_questions,
@@ -46,6 +50,20 @@ class DomainWorkspaceTests(unittest.TestCase):
         self.assertEqual(self.domain.profile.id, "data_analytics")
         self.assertIn("Agriculture/Horticulture", self.domain.sector_signals)
         self.assertIn("data quality", self.domain.matched_signals)
+
+    def test_field_label_uses_deterministic_domain_before_ai(self):
+        self.assertEqual(
+            deterministic_field_label(ANALYTICS_JD),
+            "Data Analytics & Business Intelligence",
+        )
+
+    def test_empty_ai_field_label_has_safe_fallback(self):
+        self.assertEqual(normalize_field_label(""), "General")
+        self.assertEqual(normalize_field_label("\n\n"), "General")
+        self.assertEqual(
+            normalize_field_label("**Label:** Data Analytics"),
+            "Data Analytics",
+        )
 
     def test_unrelated_role_uses_universal_profile(self):
         context = infer_domain_context(

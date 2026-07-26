@@ -17,7 +17,7 @@ from utils.ai_client import AIClientError, AIResult, get_ai_result_with_fallback
 
 
 TASK_OUTPUT_LIMITS = {
-    "classification": 96,
+    "classification": 256,
     "query": 700,
     "rewrite": 900,
     "resume_quality": 1600,
@@ -36,6 +36,22 @@ GROQ_MODEL_FALLBACKS = {
 
 class TokenBudgetError(RuntimeError):
     """Raised before a request that would exceed the configured session budget."""
+
+
+def reasoning_effort_for_task(
+    task: str,
+    provider: str,
+    model: str,
+    configured_effort: str,
+) -> str:
+    """Keep short Groq tasks from consuming their output budget on hidden reasoning."""
+    if provider != "groq" or task != "classification":
+        return configured_effort
+    if model == "qwen/qwen3.6-27b":
+        return "none"
+    if model in {"openai/gpt-oss-120b", "openai/gpt-oss-20b"}:
+        return "low"
+    return ""
 
 
 def run_ai(
@@ -78,6 +94,23 @@ def run_ai(
             "in the sidebar or start a new session."
         )
 
+    reasoning_effort = reasoning_effort_for_task(
+        task,
+        provider,
+        model,
+        get_reasoning_effort(model, provider),
+    )
+    fallback_reasoning_effort = reasoning_effort_for_task(
+        task,
+        fallback_provider,
+        fallback_model,
+        (
+            get_reasoning_effort(fallback_model, fallback_provider)
+            if fallback_provider and fallback_model
+            else ""
+        ),
+    )
+
     try:
         result = get_ai_result_with_fallback(
             api_key=get_api_key(provider),
@@ -87,15 +120,11 @@ def run_ai(
             max_tokens=limit,
             system_prompt=system_prompt,
             temperature=temperature,
-            reasoning_effort=get_reasoning_effort(model, provider),
+            reasoning_effort=reasoning_effort,
             fallback_api_key=get_api_key(fallback_provider) if fallback_provider else "",
             fallback_provider=fallback_provider,
             fallback_model=fallback_model,
-            fallback_reasoning_effort=(
-                get_reasoning_effort(fallback_model, fallback_provider)
-                if fallback_provider and fallback_model
-                else ""
-            ),
+            fallback_reasoning_effort=fallback_reasoning_effort,
             use_cache=use_cache,
             cache_scope=st.session_state["ai_cache_scope"],
         )

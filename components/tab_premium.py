@@ -23,7 +23,12 @@ from prompts.templates import (
 from utils.ai_runtime import run_ai, user_safe_ai_error
 from utils.ats_engine import AlignmentReport, analyze_alignment, top_requirement_text
 from utils.docx_builder import make_docx_from_text, validate_docx_roundtrip
-from utils.domain_profiles import domain_prompt_context, infer_domain_context
+from utils.domain_profiles import (
+    deterministic_field_label,
+    domain_prompt_context,
+    infer_domain_context,
+    normalize_field_label,
+)
 from utils.evidence_engine import (
     ClaimValidationReport,
     allocate_role_bullet_targets,
@@ -373,15 +378,18 @@ def _alignment_markdown(report: AlignmentReport) -> str:
 def _infer_field(jd_text: str, prefs: dict) -> str:
     if prefs.get("target_field", "").strip():
         return prefs["target_field"].strip()
-    if prefs.get("auto_infer_field") and jd_text.strip() and is_api_key_set():
-        resp = _call_ai(
-            INFER_FIELD_PROMPT.format(jd=jd_text),
-            temperature=0.0,
-            task="classification",
-        )
-        label = resp.strip().splitlines()[0][:40].strip("\"' ")
+    if prefs.get("auto_infer_field") and jd_text.strip():
+        label = deterministic_field_label(jd_text)
+        if not label and is_api_key_set():
+            resp = _call_ai(
+                INFER_FIELD_PROMPT.format(jd=jd_text),
+                temperature=0.0,
+                task="classification",
+            )
+            label = normalize_field_label(resp)
+        label = label or "General"
         st.session_state["inferred_field"] = label
-        return label or "General"
+        return label
     return st.session_state.get("inferred_field", "General")
 
 
