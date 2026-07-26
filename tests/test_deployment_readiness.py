@@ -33,6 +33,29 @@ def test_cloudflare_wrapper_contains_required_cold_boot_copy():
         "Application paused due to inactivity. click “Get this app back up.” "
         "Initial startup may take a short time."
     ) in markup
+    assert "Wake app directly" in markup
+    assert 'id="helper-direct-link"' in markup
+    assert 'id="retry-button"' in markup
+
+
+def test_cloudflare_wrapper_has_recoverable_wake_flow_and_fresh_assets():
+    script = (
+        ROOT / "cloudflare-wrapper" / "src" / "app.js"
+    ).read_text(encoding="utf-8")
+    worker = (ROOT / "cloudflare-worker.mjs").read_text(encoding="utf-8")
+    headers = (
+        ROOT / "cloudflare-wrapper" / "src" / "_headers"
+    ).read_text(encoding="utf-8")
+
+    assert "visibilitychange" in script
+    assert "atsStudioWakeAttempt" in script
+    assert "wake_retry" in script
+    assert "setFrameSource" in script
+    assert "setTimeout(revealStudio, 6500)" not in script
+    assert 'pathname === "/app.js"' in worker
+    assert 'pathname === "/styles.css"' in worker
+    assert "max-age=604800, immutable" not in worker
+    assert "max-age=604800, immutable" not in headers
 
 
 def test_cloudflare_wrapper_requires_runtime_streamlit_url():
