@@ -9,9 +9,9 @@
     >
     <meta name="theme-color" content="#07111f">
     <title>ATS Resume Studio</title>
-    <link rel="stylesheet" href="./styles.css">
+    <link rel="stylesheet" href="./styles.css?v=20260726-wake-recovery">
     <script src="./config.js" defer></script>
-    <script src="./app.js" defer></script>
+    <script src="./app.js?v=20260726-wake-recovery" defer></script>
   </head>
   <body>
     <main class="app-stage" data-state="starting">
@@ -56,6 +56,10 @@
               <span></span>
             </div>
             <p id="wake-progress" class="wake-progress">Preparing your workspace…</p>
+            <p class="wake-guidance">
+              Streamlit Community Cloud may need 30–120 seconds after inactivity.
+              If the embedded wake screen stalls, use the direct wake page below.
+            </p>
             <a
               id="direct-link"
               class="direct-link"
@@ -63,7 +67,7 @@
               target="_blank"
               rel="noopener noreferrer"
             >
-              Open the app directly
+              Wake app directly
             </a>
           </div>
         </div>
@@ -77,6 +81,26 @@
           referrerpolicy="strict-origin-when-cross-origin"
         ></iframe>
       </section>
+
+      <aside class="wake-helper" aria-live="polite" aria-label="Streamlit wake assistance">
+        <p id="wake-helper-message">
+          Still seeing “Zzzz” or a long startup? Wake Streamlit directly, then return here.
+        </p>
+        <div class="wake-helper-actions">
+          <a
+            id="helper-direct-link"
+            href="#"
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            Open wake page
+          </a>
+          <button id="retry-button" type="button">Reload embedded app</button>
+          <button id="dismiss-helper" type="button" aria-label="Dismiss wake assistance">
+            Dismiss
+          </button>
+        </div>
+      </aside>
 
       <section class="configuration-error" role="alert" hidden>
         <p class="eyebrow">Configuration required</p>

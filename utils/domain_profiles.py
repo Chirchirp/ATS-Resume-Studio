@@ -219,6 +219,33 @@ def infer_domain_context(text: str) -> DomainContext:
     )
 
 
+def deterministic_field_label(text: str) -> str:
+    """Return a confident field label without spending an AI request."""
+    context = infer_domain_context(text)
+    if context.profile.id != "generic":
+        return context.profile.label
+    if context.sector_signals:
+        return context.sector_signals[0]
+    return ""
+
+
+def normalize_field_label(value: str, fallback: str = "General") -> str:
+    """Extract a safe short label from an optional model response."""
+    for raw_line in (value or "").splitlines():
+        label = raw_line.strip().strip("\"'` ")
+        label = re.sub(r"^[#*\-_\s]+", "", label)
+        label = re.sub(
+            r"^(?:\*\*)?(?:label|field|industry|job family)(?:\*\*)?\s*:\s*",
+            "",
+            label,
+            flags=re.I,
+        )
+        label = label.strip("*_`\"' ")
+        if label:
+            return label[:60].strip()
+    return fallback
+
+
 def domain_prompt_context(context: DomainContext) -> str:
     """Compact domain guidance for evidence-grounded generation."""
     profile = context.profile
@@ -232,4 +259,3 @@ def domain_prompt_context(context: DomainContext) -> str:
         + "\nWRITING GUIDANCE:\n"
         + profile.writing_guidance
     )
-

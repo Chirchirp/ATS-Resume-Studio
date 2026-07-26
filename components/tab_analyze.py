@@ -19,6 +19,7 @@ from utils.ats_engine import (
     top_requirement_text,
 )
 from utils.ai_runtime import run_ai, user_safe_ai_error
+from utils.domain_profiles import deterministic_field_label, normalize_field_label
 from utils.evidence_engine import (
     achievement_grounding_context,
     build_evidence_ledger,
@@ -56,7 +57,10 @@ def _call_ai(
             task=task,
         )
         if result.fallback_used:
-            st.info(f"Primary provider was unavailable; {result.provider} completed this request.")
+            st.info(
+                f"Primary AI route was unavailable; "
+                f"{result.provider} / {result.model} completed this request."
+            )
         return result.text
     except Exception as exc:
         st.error(f"AI request failed: {user_safe_ai_error(exc)}")
@@ -73,15 +77,18 @@ def _infer_field(jd_text: str, prefs: dict) -> str:
     """Infer field from JD or return the user-set field."""
     if prefs.get("target_field", "").strip():
         return prefs["target_field"].strip()
-    if prefs.get("auto_infer_field") and jd_text.strip() and is_api_key_set():
-        resp = _call_ai(
-            INFER_FIELD_PROMPT.format(jd=jd_text),
-            temperature=0.0,
-            task="classification",
-        )
-        label = resp.strip().splitlines()[0][:40].strip("\"' ")
+    if prefs.get("auto_infer_field") and jd_text.strip():
+        label = deterministic_field_label(jd_text)
+        if not label and is_api_key_set():
+            resp = _call_ai(
+                INFER_FIELD_PROMPT.format(jd=jd_text),
+                temperature=0.0,
+                task="classification",
+            )
+            label = normalize_field_label(resp)
+        label = label or "General"
         st.session_state["inferred_field"] = label
-        return label or "General"
+        return label
     return st.session_state.get("inferred_field", "General")
 
 

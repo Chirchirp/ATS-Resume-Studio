@@ -26,12 +26,30 @@ _CACHE_LOCK = threading.Lock()
 
 
 class AIClientError(RuntimeError):
-    """A typed, user-safe provider failure."""
+    """A typed, user-safe provider failure with non-secret diagnostics."""
 
-    def __init__(self, message: str, *, retryable: bool = False, provider: str = ""):
+    def __init__(
+        self,
+        message: str,
+        *,
+        retryable: bool = False,
+        provider: str = "",
+        model: str = "",
+        category: str = "provider_error",
+        status_code: int = 0,
+        error_code: str = "",
+        retry_after: str = "",
+        request_id: str = "",
+    ):
         super().__init__(message)
         self.retryable = retryable
         self.provider = provider
+        self.model = model
+        self.category = category
+        self.status_code = status_code
+        self.error_code = error_code
+        self.retry_after = retry_after
+        self.request_id = request_id
 
 
 @dataclass(frozen=True)
@@ -115,33 +133,168 @@ def clear_response_cache():
         _CACHE.clear()
 
 
-def _safe_error(exc: Exception, provider: str) -> AIClientError:
+def _provider_error_metadata(exc: Exception) -> tuple[int, str, str]:
+    """Extract only safe status/code/header metadata from provider exceptions."""
+    status_code = int(getattr(exc, "status_code", 0) or 0)
+    body = getattr(exc, "body", None)
+    error_code = ""
+    provider_message = ""
+    if isinstance(body, dict):
+        error = body.get("error", body)
+        if isinstance(error, dict):
+            error_code = str(error.get("code") or error.get("type") or "")
+            provider_message = str(error.get("message") or "")
+        else:
+            provider_message = str(error or "")
+    return status_code, error_code, provider_message
+
+
+def _safe_error(exc: Exception, provider: str, model: str = "") -> AIClientError:
+    provider_name = provider.title()
     message = str(exc).lower()
-    if "401" in message or "invalid_api_key" in message or "unauthenticated" in message:
+    status_code, error_code, provider_message = _provider_error_metadata(exc)
+    combined = " ".join(
+        value.lower()
+        for value in (message, error_code, provider_message)
+        if value
+    )
+    response = getattr(exc, "response", None)
+    headers = getattr(response, "headers", {}) or {}
+    retry_after = str(headers.get("retry-after") or "")
+    request_id = str(
+        headers.get("x-request-id")
+        or headers.get("request-id")
+        or getattr(exc, "request_id", "")
+        or ""
+    )
+    model_label = f" for `{model}`" if model else ""
+
+    def error(
+        text: str,
+        *,
+        category: str,
+        retryable: bool = False,
+    ) -> AIClientError:
         return AIClientError(
-            f"Invalid API key or authentication failure for {provider}.",
+            text,
+            retryable=retryable,
             provider=provider,
+            model=model,
+            category=category,
+            status_code=status_code,
+            error_code=error_code,
+            retry_after=retry_after,
+            request_id=request_id,
         )
-    if "403" in message or "permission" in message:
-        return AIClientError(
-            f"{provider} denied access to this model or project.",
-            provider=provider,
+
+    if status_code == 401 or any(
+        term in combined
+        for term in ("invalid_api_key", "unauthenticated", "authentication")
+    ):
+        return error(
+            f"Invalid API key: {provider_name} rejected the credential. Replace or rotate it in "
+            "the sidebar, then use **Test current setup**.",
+            category="authentication",
         )
-    if "429" in message or "rate limit" in message or "resource_exhausted" in message:
-        return AIClientError(
-            f"{provider} rate limit reached.",
+    if status_code == 403 or "permission" in combined:
+        return error(
+            f"{provider_name} denied access{model_label}. Discover active models or "
+            "choose a model enabled for this project.",
+            category="model_access",
             retryable=True,
-            provider=provider,
         )
-    if any(term in message for term in ("timeout", "timed out", "502", "503", "504")):
-        return AIClientError(
-            f"{provider} is temporarily unavailable.",
+    if status_code == 404 or any(
+        term in combined for term in ("model_not_found", "model_decommissioned")
+    ):
+        return error(
+            f"{provider_name} cannot find or no longer serves{model_label}. "
+            "Discover active models and select a current model.",
+            category="model_unavailable",
             retryable=True,
-            provider=provider,
         )
-    return AIClientError(
-        f"{provider} could not complete this request.",
-        provider=provider,
+    if status_code == 413 or any(
+        term in combined for term in ("request too large", "context_length_exceeded")
+    ):
+        return error(
+            f"The resume and job-description request is too large for "
+            f"{provider_name}{model_label}. Shorten the source documents or generate "
+            "without the previous draft.",
+            category="request_too_large",
+        )
+    if status_code == 429 or any(
+        term in combined
+        for term in ("rate limit", "resource_exhausted", "tokens per minute")
+    ):
+        wait_text = f" Wait about {retry_after} seconds." if retry_after else ""
+        return error(
+            f"{provider_name} rate or token limit was reached{model_label}.{wait_text} "
+            "Retry shortly or enable automatic model/provider fallback.",
+            category="rate_limit",
+            retryable=True,
+        )
+    if status_code == 498 or "capacity exceeded" in combined:
+        return error(
+            f"{provider_name} has no temporary capacity{model_label}. Retry shortly "
+            "or use the configured fallback.",
+            category="capacity",
+            retryable=True,
+        )
+    if status_code == 422 or "unprocessable" in combined:
+        return error(
+            f"{provider_name} could not process this prompt{model_label}. The app can "
+            "retry with another active model.",
+            category="unprocessable",
+            retryable=True,
+        )
+    if status_code == 400 or any(
+        term in combined
+        for term in (
+            "invalid_request_error",
+            "bad request",
+            "blocked_api_access",
+        )
+    ):
+        if "blocked_api_access" in combined:
+            return error(
+                f"{provider_name} blocked API access because the project or spending "
+                "limit was reached. Review the Groq project Limits page.",
+                category="account_limit",
+            )
+        if any(
+            term in combined
+            for term in (
+                "reasoning_effort",
+                "reasoning_format",
+                "unsupported parameter",
+                "not support",
+            )
+        ):
+            return error(
+                f"{provider_name} rejected a model parameter{model_label}. Reset the "
+                "reasoning setting or let the app switch to a compatible model.",
+                category="model_parameters",
+                retryable=True,
+            )
+        return error(
+            f"{provider_name} rejected the request{model_label}. Reset any custom "
+            "model ID and model parameters, then test the setup.",
+            category="invalid_request",
+            retryable=bool(model),
+        )
+    if status_code in {500, 502, 503, 504} or any(
+        term in combined
+        for term in ("timeout", "timed out", "connection", "temporarily unavailable")
+    ):
+        return error(
+            f"{provider_name} is temporarily unavailable{model_label}. Retry shortly "
+            "or use the configured fallback.",
+            category="temporary_provider_failure",
+            retryable=True,
+        )
+    return error(
+        f"{provider_name} returned an unexpected provider error{model_label}. "
+        "Use **Test current setup**, then retry with another active model.",
+        category="unexpected_provider_error",
     )
 
 
@@ -176,7 +329,10 @@ def _groq_result(
         raise AIClientError(
             "The selected Groq model used its completion budget without returning final text. "
             "Use a non-reasoning model for short tasks or increase the task output limit.",
+            retryable=True,
             provider="groq",
+            model=model,
+            category="empty_output",
         )
     raw_usage = getattr(completion, "usage", None)
     prompt_tokens = int(getattr(raw_usage, "prompt_tokens", 0) or 0)
@@ -346,7 +502,7 @@ def get_ai_result(
     except AIClientError:
         raise
     except Exception as exc:
-        raise _safe_error(exc, provider) from exc
+        raise _safe_error(exc, provider, model) from exc
 
     if use_cache and result.text:
         _put_cached(key, result)
@@ -390,21 +546,38 @@ def get_ai_result_with_fallback(
             and fallback_provider
             and fallback_api_key
             and fallback_model
-            and fallback_provider != provider
+            and (
+                fallback_provider != provider
+                or fallback_model != model
+            )
         ):
             raise
-        fallback_result = get_ai_result(
-            fallback_api_key,
-            fallback_model,
-            prompt,
-            max_tokens,
-            provider=fallback_provider,
-            system_prompt=system_prompt,
-            temperature=temperature,
-            reasoning_effort=fallback_reasoning_effort,
-            use_cache=use_cache,
-            cache_scope=cache_scope,
-        )
+        try:
+            fallback_result = get_ai_result(
+                fallback_api_key,
+                fallback_model,
+                prompt,
+                max_tokens,
+                provider=fallback_provider,
+                system_prompt=system_prompt,
+                temperature=temperature,
+                reasoning_effort=fallback_reasoning_effort,
+                use_cache=use_cache,
+                cache_scope=cache_scope,
+            )
+        except AIClientError as fallback_exc:
+            raise AIClientError(
+                "The primary and fallback AI routes both failed. "
+                f"Primary: {exc}. Fallback: {fallback_exc}",
+                retryable=fallback_exc.retryable,
+                provider=fallback_exc.provider,
+                model=fallback_exc.model,
+                category="fallback_exhausted",
+                status_code=fallback_exc.status_code,
+                error_code=fallback_exc.error_code,
+                retry_after=fallback_exc.retry_after,
+                request_id=fallback_exc.request_id,
+            ) from fallback_exc
         return AIResult(
             text=fallback_result.text,
             provider=fallback_result.provider,

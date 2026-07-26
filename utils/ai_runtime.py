@@ -17,7 +17,7 @@ from utils.ai_client import AIClientError, AIResult, get_ai_result_with_fallback
 
 
 TASK_OUTPUT_LIMITS = {
-    "classification": 96,
+    "classification": 256,
     "query": 700,
     "rewrite": 900,
     "resume_quality": 1600,
@@ -27,9 +27,31 @@ TASK_OUTPUT_LIMITS = {
     "resume": 3200,
 }
 
+GROQ_MODEL_FALLBACKS = {
+    "openai/gpt-oss-120b": "openai/gpt-oss-20b",
+    "qwen/qwen3.6-27b": "openai/gpt-oss-120b",
+    "openai/gpt-oss-20b": "openai/gpt-oss-120b",
+}
+
 
 class TokenBudgetError(RuntimeError):
     """Raised before a request that would exceed the configured session budget."""
+
+
+def reasoning_effort_for_task(
+    task: str,
+    provider: str,
+    model: str,
+    configured_effort: str,
+) -> str:
+    """Keep short Groq tasks from consuming their output budget on hidden reasoning."""
+    if provider != "groq" or task != "classification":
+        return configured_effort
+    if model == "qwen/qwen3.6-27b":
+        return "none"
+    if model in {"openai/gpt-oss-120b", "openai/gpt-oss-20b"}:
+        return "low"
+    return ""
 
 
 def run_ai(
@@ -47,6 +69,13 @@ def run_ai(
     fallback_model = (
         get_task_model(task, fallback_provider) if fallback_provider else ""
     )
+    if (
+        not fallback_provider
+        and provider == "groq"
+        and st.session_state.get("enable_groq_model_fallback", True)
+    ):
+        fallback_provider = "groq"
+        fallback_model = GROQ_MODEL_FALLBACKS.get(model, "openai/gpt-oss-20b")
     if "ai_cache_scope" not in st.session_state:
         st.session_state["ai_cache_scope"] = uuid.uuid4().hex
 
@@ -65,26 +94,54 @@ def run_ai(
             "in the sidebar or start a new session."
         )
 
-    result = get_ai_result_with_fallback(
-        api_key=get_api_key(provider),
-        provider=provider,
-        model=model,
-        prompt=prompt,
-        max_tokens=limit,
-        system_prompt=system_prompt,
-        temperature=temperature,
-        reasoning_effort=get_reasoning_effort(model, provider),
-        fallback_api_key=get_api_key(fallback_provider) if fallback_provider else "",
-        fallback_provider=fallback_provider,
-        fallback_model=fallback_model,
-        fallback_reasoning_effort=(
+    reasoning_effort = reasoning_effort_for_task(
+        task,
+        provider,
+        model,
+        get_reasoning_effort(model, provider),
+    )
+    fallback_reasoning_effort = reasoning_effort_for_task(
+        task,
+        fallback_provider,
+        fallback_model,
+        (
             get_reasoning_effort(fallback_model, fallback_provider)
             if fallback_provider and fallback_model
             else ""
         ),
-        use_cache=use_cache,
-        cache_scope=st.session_state["ai_cache_scope"],
     )
+
+    try:
+        result = get_ai_result_with_fallback(
+            api_key=get_api_key(provider),
+            provider=provider,
+            model=model,
+            prompt=prompt,
+            max_tokens=limit,
+            system_prompt=system_prompt,
+            temperature=temperature,
+            reasoning_effort=reasoning_effort,
+            fallback_api_key=get_api_key(fallback_provider) if fallback_provider else "",
+            fallback_provider=fallback_provider,
+            fallback_model=fallback_model,
+            fallback_reasoning_effort=fallback_reasoning_effort,
+            use_cache=use_cache,
+            cache_scope=st.session_state["ai_cache_scope"],
+        )
+    except AIClientError as exc:
+        st.session_state["last_ai_error"] = {
+            "provider": exc.provider or provider,
+            "model": exc.model or model,
+            "category": exc.category,
+            "status_code": exc.status_code,
+            "error_code": exc.error_code,
+            "retryable": exc.retryable,
+            "retry_after": exc.retry_after,
+            "request_id": exc.request_id,
+            "message": str(exc),
+            "task": task,
+        }
+        raise
 
     st.session_state["ai_input_tokens"] = int(
         st.session_state.get("ai_input_tokens", 0)
@@ -103,6 +160,7 @@ def run_ai(
         "cache_hit": result.cache_hit,
         "fallback_used": result.fallback_used,
     }
+    st.session_state.pop("last_ai_error", None)
     return result
 
 

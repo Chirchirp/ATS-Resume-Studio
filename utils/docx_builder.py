@@ -11,10 +11,14 @@ from docx import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
-from docx.shared import Pt
+from docx.shared import Inches, Pt, RGBColor
 from utils.ats_engine import extract_resume_profile
 
 BOLD_PATTERN = re.compile(r"\*\*(.+?)\*\*")
+NAVY = "17365D"
+TEAL = "1B7F79"
+BODY = "263645"
+MUTED = "536779"
 
 
 @dataclass(frozen=True)
@@ -84,6 +88,40 @@ def _add_horizontal_line(doc):
     pPr.append(pBdr)
 
 
+def _set_style_font(style, name: str, size: float, color: str = BODY):
+    style.font.name = name
+    style.font.size = Pt(size)
+    style.font.color.rgb = RGBColor.from_string(color)
+    style._element.get_or_add_rPr().get_or_add_rFonts().set(qn("w:ascii"), name)
+    style._element.get_or_add_rPr().get_or_add_rFonts().set(qn("w:hAnsi"), name)
+
+
+def _set_bottom_border(paragraph, color: str = TEAL, size: str = "8"):
+    p_pr = paragraph._p.get_or_add_pPr()
+    borders = p_pr.find(qn("w:pBdr"))
+    if borders is None:
+        borders = OxmlElement("w:pBdr")
+        p_pr.append(borders)
+    bottom = OxmlElement("w:bottom")
+    bottom.set(qn("w:val"), "single")
+    bottom.set(qn("w:sz"), size)
+    bottom.set(qn("w:space"), "2")
+    bottom.set(qn("w:color"), color)
+    borders.append(bottom)
+
+
+def _style_pipe_record(paragraph, line: str):
+    """Style a pipe-delimited record without changing its ATS extraction order."""
+    parts = [re.sub(r"\*\*", "", part.strip()) for part in line.split("|")]
+    for index, part in enumerate(parts):
+        if index:
+            separator = paragraph.add_run("  |  ")
+            separator.font.color.rgb = RGBColor.from_string(TEAL)
+        run = paragraph.add_run(part)
+        run.bold = index == 0
+        run.font.color.rgb = RGBColor.from_string(NAVY if index == 0 else BODY)
+
+
 def make_docx_from_text(text: str, name: str = "") -> bytes:
     """
     Convert plain / lightly-marked-up resume text into a polished DOCX.
@@ -91,24 +129,47 @@ def make_docx_from_text(text: str, name: str = "") -> bytes:
     Returns raw bytes suitable for st.download_button.
     """
     doc = Document()
+    doc.core_properties.title = "ATS-Optimized Resume"
+    doc.core_properties.subject = "Single-column ATS-readable professional resume"
+
+    # Named design override: compact_reference_guide -> ats_resume_single_column.
+    # The narrower 0.72" margins keep two-page resumes concise while all content
+    # remains in the normal document body and reading order.
+    section = doc.sections[0]
+    section.page_width = Inches(8.5)
+    section.page_height = Inches(11)
+    section.top_margin = Inches(0.68)
+    section.bottom_margin = Inches(0.68)
+    section.left_margin = Inches(0.72)
+    section.right_margin = Inches(0.72)
 
     style = doc.styles["Normal"]
-    style.font.name = "Calibri"
-    style.font.size = Pt(11)
+    _set_style_font(style, "Arial", 10.25)
     pf = style.paragraph_format
-    pf.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
-    pf.line_spacing = 1.15
-    pf.space_after = Pt(0)
+    pf.alignment = WD_ALIGN_PARAGRAPH.LEFT
+    pf.line_spacing = 1.08
+    pf.space_after = Pt(2)
     pf.space_before = Pt(0)
 
-    if name and not text.strip().startswith(name):
-        h = doc.add_paragraph()
-        r = h.add_run(name.strip())
-        r.bold = True
-        r.font.size = Pt(18)
-        h.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        h.paragraph_format.space_after = Pt(6)
-        doc.add_paragraph()
+    heading_style = doc.styles["Heading 1"]
+    _set_style_font(heading_style, "Arial", 11.5, NAVY)
+    heading_style.font.bold = True
+    heading_style.font.all_caps = True
+    heading_style.paragraph_format.space_before = Pt(9)
+    heading_style.paragraph_format.space_after = Pt(4)
+    heading_style.paragraph_format.keep_with_next = True
+
+    bullet_style = doc.styles["List Bullet"]
+    _set_style_font(bullet_style, "Arial", 10.25)
+    bullet_style.paragraph_format.left_indent = Inches(0.24)
+    bullet_style.paragraph_format.first_line_indent = Inches(-0.15)
+    bullet_style.paragraph_format.space_before = Pt(0)
+    bullet_style.paragraph_format.space_after = Pt(2)
+    bullet_style.paragraph_format.line_spacing = 1.08
+
+    parsed_profile = extract_resume_profile(text)
+    candidate_name = (name or parsed_profile.candidate_name).strip()
+    name_written = False
 
     lines = text.splitlines()
     i = 0
@@ -121,6 +182,37 @@ def make_docx_from_text(text: str, name: str = "") -> bytes:
             i += 1
             continue
 
+        normalized_plain = re.sub(r"\*\*", "", line).strip()
+        if (
+            candidate_name
+            and not name_written
+            and normalized_plain.casefold() == candidate_name.casefold()
+        ):
+            p = doc.add_paragraph()
+            p.alignment = WD_ALIGN_PARAGRAPH.LEFT
+            p.paragraph_format.space_after = Pt(2)
+            p.paragraph_format.keep_with_next = True
+            run = p.add_run(candidate_name)
+            run.bold = True
+            run.font.name = "Arial"
+            run.font.size = Pt(21)
+            run.font.color.rgb = RGBColor.from_string(NAVY)
+            name_written = True
+            i += 1
+            continue
+
+        if candidate_name and not name_written:
+            p = doc.add_paragraph()
+            p.alignment = WD_ALIGN_PARAGRAPH.LEFT
+            p.paragraph_format.space_after = Pt(2)
+            p.paragraph_format.keep_with_next = True
+            run = p.add_run(candidate_name)
+            run.bold = True
+            run.font.name = "Arial"
+            run.font.size = Pt(21)
+            run.font.color.rgb = RGBColor.from_string(NAVY)
+            name_written = True
+
         # Section header
         if (line.isupper() and len(line.split()) <= 4) or re.match(
             r"^(PROFESSIONAL SUMMARY|CORE SKILLS|PROFESSIONAL EXPERIENCE|"
@@ -131,15 +223,10 @@ def make_docx_from_text(text: str, name: str = "") -> bytes:
             in_core_skills = bool(
                 re.match(r"^(CORE SKILLS|TECHNICAL SKILLS)[\s:]*$", line, re.I)
             )
-            if i > 0:
-                _add_horizontal_line(doc)
-
             heading_text = re.sub(r"[#\*_\-]{2,}", "", line.strip().rstrip(":")).strip()
             h = doc.add_heading(heading_text, level=1)
-            h.runs[0].font.size = Pt(14)
             h.alignment = WD_ALIGN_PARAGRAPH.LEFT
-            h.paragraph_format.space_before = Pt(0)
-            h.paragraph_format.space_after = Pt(3)
+            _set_bottom_border(h)
             i += 1
             continue
 
@@ -174,9 +261,8 @@ def make_docx_from_text(text: str, name: str = "") -> bytes:
         if not in_core_skills and re.match(r"^[\•\-\*]\s+", line):
             bullet_text = re.sub(r"^[\•\-\*]\s+", "", line).strip()
             p = doc.add_paragraph(style="List Bullet")
-            p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
-            p.paragraph_format.space_after = Pt(0)
-            p.paragraph_format.space_before = Pt(0)
+            p.alignment = WD_ALIGN_PARAGRAPH.LEFT
+            p.paragraph_format.widow_control = True
             _add_runs_with_bold(p, bullet_text)
             i += 1
             continue
@@ -186,25 +272,30 @@ def make_docx_from_text(text: str, name: str = "") -> bytes:
             p = doc.add_paragraph()
             p.paragraph_format.space_before = Pt(6)
             p.paragraph_format.space_after = Pt(2)
+            p.paragraph_format.keep_with_next = True
             p.alignment = WD_ALIGN_PARAGRAPH.LEFT
-            p.add_run(re.sub(r"\*\*", "", line.strip())).bold = True
+            _style_pipe_record(p, line)
             i += 1
             continue
 
-        # Contact info — centred
+        # Contact info remains in the body (not a header) for ATS reliability.
         if any(kw in line.lower() for kw in ["@", "phone", "email", "linkedin", "github", "number"]):
             p = doc.add_paragraph()
-            p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-            p.paragraph_format.space_after = Pt(6)
+            p.alignment = WD_ALIGN_PARAGRAPH.LEFT
+            p.paragraph_format.space_after = Pt(5)
             p.paragraph_format.space_before = Pt(0)
+            p.paragraph_format.keep_with_next = True
             _add_runs_with_bold(p, line)
+            for run in p.runs:
+                run.font.size = Pt(9.25)
+                run.font.color.rgb = RGBColor.from_string(MUTED)
             i += 1
             continue
 
         # Generic paragraph
         p = doc.add_paragraph()
-        p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
-        p.paragraph_format.space_after = Pt(0)
+        p.alignment = WD_ALIGN_PARAGRAPH.LEFT
+        p.paragraph_format.space_after = Pt(2)
         p.paragraph_format.space_before = Pt(0)
         _add_runs_with_bold(p, line)
         i += 1

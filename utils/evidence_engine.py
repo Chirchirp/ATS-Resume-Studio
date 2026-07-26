@@ -127,6 +127,17 @@ class ClaimValidationReport:
         return round(self.supported_claims / self.claims_checked * 100)
 
 
+@dataclass(frozen=True)
+class RoleBulletPlan:
+    """A deterministic, evidence-bounded bullet target for one source role."""
+
+    role_id: str
+    role_header: str
+    target: int
+    available: int
+    relevance_hits: int
+
+
 def _section_heading(line: str) -> str | None:
     cleaned = re.sub(r"[^a-z ]", "", line.lower()).strip()
     aliases = {
@@ -292,13 +303,23 @@ def build_evidence_ledger(
         clean = re.sub(r"\s+", " ", answer).strip()
         if not clean:
             continue
+        role_id_match = re.search(r"\bROLE\d{3}\b", question_id)
+        target_role = next(
+            (
+                role
+                for role in profile.roles
+                if role_id_match and role.id == role_id_match.group(0)
+            ),
+            None,
+        )
         add_item(
-            section="clarification",
-            role="Candidate clarification",
+            section="experience" if target_role else "clarification",
+            role=target_role.header if target_role else "Candidate clarification",
+            role_id=target_role.id if target_role else "",
             text=clean,
             source=question_id,
             verification="user_confirmed",
-            item_type="clarification",
+            item_type="user_confirmed",
         )
 
     source_material = resume_text + "\n" + "\n".join(
@@ -875,6 +896,481 @@ def strip_generation_annotations(generated_text: str) -> str:
     return re.sub(r"\n{3,}", "\n\n", "\n".join(kept)).strip()
 
 
+def allocate_role_bullet_targets(
+    ledger: EvidenceLedger,
+    matrix: EvidenceMatrix,
+    *,
+    preferred_per_role: int = 4,
+    minimum_per_role: int = 1,
+    maximum_per_role: int = 6,
+) -> tuple[RoleBulletPlan, ...]:
+    """Distribute a finite bullet budget fairly across parsed source roles.
+
+    Every role with usable evidence receives a baseline allocation before extra
+    bullets are assigned. Remaining capacity is distributed in round-robin
+    order, prioritising roles with stronger JD coverage without starving older
+    or less directly aligned roles.
+    """
+    if not ledger.profile or not ledger.profile.roles:
+        return ()
+
+    preferred = max(1, min(maximum_per_role, int(preferred_per_role)))
+    role_items = {
+        role.id: [
+            item
+            for item in ledger.items
+            if item.role_id == role.id
+            and item.section == "experience"
+            and item.item_type in {"bullet", "role_detail", "user_confirmed"}
+        ]
+        for role in ledger.profile.roles
+    }
+    relevant_ids = {
+        evidence_id
+        for row in matrix.rows
+        if row.status in {"direct", "equivalent", "transferable"}
+        for evidence_id in row.evidence_ids
+    }
+    roles = [
+        role
+        for role in ledger.profile.roles
+        if role_items.get(role.id)
+    ]
+    if not roles:
+        return ()
+
+    allocations = {
+        role.id: min(len(role_items[role.id]), max(1, minimum_per_role))
+        for role in roles
+    }
+    total_available = sum(len(role_items[role.id]) for role in roles)
+    total_budget = min(total_available, preferred * len(roles))
+    relevance = {
+        role.id: sum(item.id in relevant_ids for item in role_items[role.id])
+        for role in roles
+    }
+
+    # First pass is deliberately fair; relevance changes ordering, not eligibility.
+    ordered = sorted(
+        enumerate(roles),
+        key=lambda pair: (-relevance[pair[1].id], pair[0]),
+    )
+    while sum(allocations.values()) < total_budget:
+        progressed = False
+        for _, role in ordered:
+            cap = min(maximum_per_role, len(role_items[role.id]))
+            if allocations[role.id] >= cap:
+                continue
+            allocations[role.id] += 1
+            progressed = True
+            if sum(allocations.values()) >= total_budget:
+                break
+        if not progressed:
+            break
+
+    return tuple(
+        RoleBulletPlan(
+            role_id=role.id,
+            role_header=role.header,
+            target=allocations[role.id],
+            available=len(role_items[role.id]),
+            relevance_hits=relevance[role.id],
+        )
+        for role in roles
+    )
+
+
+def role_bullet_plan_context(plans: tuple[RoleBulletPlan, ...]) -> str:
+    """Return prompt-safe role targets with exact source headers."""
+    if not plans:
+        return "No reliably parsed role records; preserve the source structure."
+    return "\n".join(
+        f"- {plan.role_id}: {plan.target} bullet(s) | exact_header="
+        f'"{plan.role_header}" | available_evidence={plan.available}'
+        for plan in plans
+    )
+
+
+def _best_evidence_for_claim(
+    claim: str,
+    ledger: EvidenceLedger,
+    *,
+    preferred_role_id: str = "",
+) -> EvidenceItem | None:
+    candidates = [
+        item
+        for item in ledger.items
+        if item.section in {"experience", "projects"}
+        and item.item_type
+        in {
+            "bullet",
+            "role_detail",
+            "project_detail",
+            "unassigned_experience",
+            "user_confirmed",
+        }
+    ]
+    if not candidates:
+        return None
+    claim_terms = _content_terms(claim)
+
+    def rank(item: EvidenceItem) -> tuple[int, int, int, int]:
+        overlap = len(claim_terms.intersection(item.terms))
+        role_bonus = int(bool(preferred_role_id) and item.role_id == preferred_role_id)
+        type_bonus = int(item.item_type == "bullet")
+        return overlap, role_bonus, type_bonus, -item.source_line
+
+    return max(candidates, key=rank)
+
+
+def _requirement_for_evidence(
+    evidence_id: str,
+    matrix: EvidenceMatrix,
+) -> RequirementEvidence | None:
+    priority_rank = {"required": 3, "responsibility": 2, "preferred": 1}
+    candidates = [
+        row
+        for row in matrix.rows
+        if evidence_id in row.evidence_ids
+        and row.status in {"direct", "equivalent", "transferable"}
+    ]
+    if not candidates:
+        return None
+    return max(
+        candidates,
+        key=lambda row: (
+            priority_rank.get(row.priority, 0),
+            len(row.matched_terms),
+            -int(row.id[1:]),
+        ),
+    )
+
+
+def _canonical_bullet_block(
+    claim: str,
+    evidence: EvidenceItem,
+    matrix: EvidenceMatrix,
+    *,
+    use_source_wording: bool = False,
+) -> list[str]:
+    visible_claim = evidence.text if use_source_wording else _clean_evidence_line(claim)
+    requirement = _requirement_for_evidence(evidence.id, matrix)
+    block = [
+        f"- {visible_claim}",
+        f'  Evidence: {evidence.id} — "{evidence.text}"',
+    ]
+    if requirement:
+        block.append(
+            f'  JD Match: {requirement.id} — "{requirement.requirement}"'
+        )
+    else:
+        block.append("  JD Match: none — retained candidate value")
+    return block
+
+
+def _canonicalize_bullet_blocks(
+    generated_text: str,
+    ledger: EvidenceLedger,
+    matrix: EvidenceMatrix,
+    jd_text: str,
+) -> str:
+    """Rebuild hidden citations and replace only factually unsafe bullet wording."""
+    evidence_by_id = ledger.by_id()
+    lines = generated_text.splitlines()
+    output: list[str] = []
+    current_role_id = ""
+    source_headers = {
+        _normalized_fact_line(role.header): role.id
+        for role in (ledger.profile.roles if ledger.profile else ())
+    }
+    index = 0
+    while index < len(lines):
+        raw = lines[index]
+        clean = raw.strip()
+        normalized = _normalized_fact_line(clean)
+        if normalized in source_headers:
+            current_role_id = source_headers[normalized]
+        if not BULLET_RE.match(raw) or len(_clean_evidence_line(raw).split()) < 4:
+            if not clean.lower().startswith(("evidence:", "status:", "jd match:")):
+                output.append(raw)
+            index += 1
+            continue
+
+        end = index + 1
+        while end < len(lines) and not BULLET_RE.match(lines[end]):
+            next_clean = lines[end].strip()
+            if _section_heading(next_clean) or (
+                ROLE_RE.search(next_clean)
+                and not next_clean.lower().startswith(
+                    ("evidence:", "status:", "jd match:")
+                )
+            ):
+                break
+            end += 1
+        citation_text = " ".join(lines[index + 1 : end])
+        cited = [
+            evidence_by_id[item_id]
+            for item_id in re.findall(r"\bE\d{3}\b", citation_text)
+            if item_id in evidence_by_id
+        ]
+        evidence = cited[0] if cited else _best_evidence_for_claim(
+            _clean_evidence_line(raw),
+            ledger,
+            preferred_role_id=current_role_id,
+        )
+        if evidence:
+            bullet_report = validate_generated_claims(
+                "- " + _clean_evidence_line(raw),
+                ledger,
+                jd_text,
+            )
+            unsafe = any(issue.severity == "high" for issue in bullet_report.issues)
+            output.extend(
+                _canonical_bullet_block(
+                    raw,
+                    evidence,
+                    matrix,
+                    use_source_wording=unsafe,
+                )
+            )
+        index = end
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(output)).strip()
+
+
+def _annotated_bullet_blocks(text: str) -> list[tuple[str, list[str]]]:
+    lines = text.splitlines()
+    blocks: list[tuple[str, list[str]]] = []
+    index = 0
+    while index < len(lines):
+        if not BULLET_RE.match(lines[index]):
+            index += 1
+            continue
+        end = index + 1
+        while end < len(lines) and not BULLET_RE.match(lines[end]):
+            next_clean = lines[end].strip()
+            if _section_heading(next_clean) or (
+                ROLE_RE.search(next_clean)
+                and not next_clean.lower().startswith(
+                    ("evidence:", "status:", "jd match:")
+                )
+            ):
+                break
+            end += 1
+        block = lines[index:end]
+        ids = re.findall(r"\bE\d{3}\b", " ".join(block[1:]))
+        if ids:
+            blocks.append((ids[0], block))
+        index = end
+    return blocks
+
+
+def _replace_experience_section(
+    annotated_text: str,
+    ledger: EvidenceLedger,
+    matrix: EvidenceMatrix,
+    plans: tuple[RoleBulletPlan, ...],
+) -> str:
+    if not plans or not ledger.profile:
+        return annotated_text
+    lines = annotated_text.splitlines()
+    start = next(
+        (
+            index
+            for index, line in enumerate(lines)
+            if _section_heading(line.strip()) == "experience"
+        ),
+        None,
+    )
+    if start is None:
+        start = len(lines)
+        before = lines + ([""] if lines else [])
+        after: list[str] = []
+    else:
+        end = next(
+            (
+                index
+                for index in range(start + 1, len(lines))
+                if _section_heading(lines[index].strip())
+                and _section_heading(lines[index].strip()) != "experience"
+            ),
+            len(lines),
+        )
+        before = lines[:start]
+        after = lines[end:]
+
+    by_id = ledger.by_id()
+    generated_by_role: dict[str, list[list[str]]] = {}
+    for evidence_id, block in _annotated_bullet_blocks(annotated_text):
+        item = by_id.get(evidence_id)
+        if item and item.section == "experience" and item.role_id:
+            generated_by_role.setdefault(item.role_id, []).append(block)
+
+    section = ["PROFESSIONAL EXPERIENCE"]
+    used_evidence: set[str] = set()
+    for plan in plans:
+        section.extend(["", plan.role_header])
+        selected: list[list[str]] = []
+        for block in generated_by_role.get(plan.role_id, []):
+            evidence_id = re.findall(r"\bE\d{3}\b", " ".join(block[1:]))[0]
+            if evidence_id in used_evidence:
+                continue
+            selected.append(block)
+            used_evidence.add(evidence_id)
+            if len(selected) >= plan.target:
+                break
+        source_items = [
+            item
+            for item in ledger.items
+            if item.role_id == plan.role_id
+            and item.section == "experience"
+            and item.item_type in {"bullet", "role_detail", "user_confirmed"}
+            and item.id not in used_evidence
+        ]
+        source_items.sort(
+            key=lambda item: (
+                _requirement_for_evidence(item.id, matrix) is None,
+                item.item_type != "bullet",
+                item.source_line,
+            )
+        )
+        for item in source_items:
+            if len(selected) >= plan.target:
+                break
+            selected.append(
+                _canonical_bullet_block(
+                    item.text,
+                    item,
+                    matrix,
+                    use_source_wording=True,
+                )
+            )
+            used_evidence.add(item.id)
+        for block in selected:
+            section.extend(block)
+
+    merged = before + ([""] if before else []) + section
+    if after:
+        merged += [""] + after
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(merged)).strip()
+
+
+def repair_grounded_resume_draft(
+    generated_text: str,
+    ledger: EvidenceLedger,
+    jd_text: str,
+    role_plans: tuple[RoleBulletPlan, ...] = (),
+) -> str:
+    """Deterministically repair audit metadata and source-role structure.
+
+    The model remains responsible for wording. Code—not the model—owns exact
+    evidence quotes, requirement quotes, IDs, and role headers. Unsupported
+    bullet wording falls back to the cited source statement.
+    """
+    matrix = build_evidence_matrix(jd_text, ledger)
+    canonical = _canonicalize_bullet_blocks(
+        generated_text,
+        ledger,
+        matrix,
+        jd_text,
+    )
+    return _replace_experience_section(
+        canonical,
+        ledger,
+        matrix,
+        role_plans,
+    )
+
+
+def build_safe_evidence_resume(
+    ledger: EvidenceLedger,
+    jd_text: str,
+    role_plans: tuple[RoleBulletPlan, ...] = (),
+) -> str:
+    """Build a guaranteed source-only recovery version for blocked downloads."""
+    profile = ledger.profile
+    if not profile:
+        return ""
+    matrix = build_evidence_matrix(jd_text, ledger)
+    plans = role_plans or allocate_role_bullet_targets(ledger, matrix)
+    lines: list[str] = []
+    if profile.candidate_name:
+        lines.append(profile.candidate_name)
+    contacts = list(profile.contact.emails + profile.contact.phones + profile.contact.links)
+    if contacts:
+        lines.append(" | ".join(contacts))
+    if profile.summary_lines:
+        lines.extend(["", "PROFESSIONAL SUMMARY", *profile.summary_lines])
+    skill_lines = [
+        line.strip()
+        for line in profile.sections.get("skills", "").splitlines()
+        if line.strip()
+    ]
+    if skill_lines:
+        lines.extend(["", "CORE SKILLS", *skill_lines])
+
+    seed = "\n".join(lines)
+    if plans:
+        seed = _replace_experience_section(seed, ledger, matrix, plans)
+    else:
+        raw_experience = [
+            line.strip()
+            for line in profile.sections.get("experience", "").splitlines()
+            if line.strip()
+        ]
+        if raw_experience:
+            seed += "\n\nPROFESSIONAL EXPERIENCE\n" + "\n".join(raw_experience)
+            seed = _canonicalize_bullet_blocks(seed, ledger, matrix, jd_text)
+
+    tail: list[str] = []
+    education_lines = (
+        [record.text for record in profile.education_records]
+        or [
+            line.strip()
+            for line in profile.sections.get("education", "").splitlines()
+            if line.strip()
+        ]
+    )
+    if education_lines:
+        tail.extend(
+            ["", "EDUCATION", *education_lines]
+        )
+    certification_lines = (
+        [record.text for record in profile.certification_records]
+        or [
+            line.strip()
+            for line in profile.sections.get("certifications", "").splitlines()
+            if line.strip()
+        ]
+    )
+    if certification_lines:
+        tail.extend(
+            [
+                "",
+                "CERTIFICATIONS",
+                *certification_lines,
+            ]
+        )
+    if profile.projects:
+        tail.extend(["", "PROJECTS"])
+        for project in profile.projects:
+            tail.append(project.title)
+            project_items = [
+                item
+                for item in ledger.items
+                if item.role_id == project.id and item.section == "projects"
+            ]
+            for item in project_items:
+                tail.extend(
+                    _canonical_bullet_block(
+                        item.text,
+                        item,
+                        matrix,
+                        use_source_wording=True,
+                    )
+                )
+    return re.sub(r"\n{3,}", "\n\n", seed + "\n" + "\n".join(tail)).strip()
+
+
 def validate_grounded_resume_draft(
     generated_text: str,
     ledger: EvidenceLedger,
@@ -1030,9 +1526,18 @@ def validate_grounded_resume_draft(
 
     source_roles = (
         {
-            _normalized_fact_line(role.header)
-            for role in ledger.profile.roles
-            if role.header
+            _normalized_fact_line(header)
+            for header in (
+                *(role.header for role in ledger.profile.roles),
+                *(project.title for project in ledger.profile.projects),
+            )
+            if header
+        }
+        | {
+            _normalized_fact_line(line)
+            for section in ("experience", "projects")
+            for line in ledger.profile.sections.get(section, "").splitlines()
+            if ROLE_RE.search(line)
         }
         if ledger.profile
         else {

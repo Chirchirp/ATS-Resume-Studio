@@ -327,18 +327,86 @@ h1 {
   font-size: 0.88rem;
 }
 
+.wake-guidance {
+  max-width: 34rem;
+  margin: 0.55rem 0 0;
+  color: #8fa7c3;
+  font-size: 0.78rem;
+  line-height: 1.55;
+}
+
 .direct-link {
-  display: inline-block;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   margin-top: 1.35rem;
-  color: #b9d4ff;
-  font-size: 0.82rem;
-  text-decoration-color: rgba(185, 212, 255, 0.45);
-  text-underline-offset: 0.22rem;
+  padding: 0.78rem 1rem;
+  border: 1px solid rgba(120, 167, 255, 0.48);
+  border-radius: 0.7rem;
+  background: linear-gradient(135deg, rgba(79, 140, 255, 0.35), rgba(66, 211, 255, 0.14));
+  color: #e9f4ff;
+  font-size: 0.86rem;
+  font-weight: 750;
+  text-decoration: none;
 }
 
 .direct-link:hover,
 .direct-link:focus-visible {
+  border-color: rgba(66, 211, 255, 0.8);
   color: white;
+}
+
+.wake-helper {
+  position: fixed;
+  right: 1rem;
+  bottom: 1rem;
+  z-index: 5;
+  display: none;
+  width: min(32rem, calc(100vw - 2rem));
+  padding: 0.9rem;
+  border: 1px solid rgba(120, 167, 255, 0.3);
+  border-radius: 0.85rem;
+  background: rgba(7, 17, 31, 0.94);
+  color: #dcecff;
+  box-shadow: 0 1rem 3rem rgba(0, 0, 0, 0.3);
+  backdrop-filter: blur(14px);
+}
+
+.wake-helper p {
+  margin: 0 0 0.65rem;
+  font-size: 0.78rem;
+  line-height: 1.45;
+}
+
+.wake-helper-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+}
+
+.wake-helper a,
+.wake-helper button {
+  padding: 0.48rem 0.66rem;
+  border: 1px solid rgba(120, 167, 255, 0.34);
+  border-radius: 0.55rem;
+  background: rgba(79, 140, 255, 0.14);
+  color: #dcecff;
+  font: inherit;
+  font-size: 0.74rem;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.wake-helper a:hover,
+.wake-helper a:focus-visible,
+.wake-helper button:hover,
+.wake-helper button:focus-visible {
+  border-color: var(--cyan);
+  color: white;
+}
+
+.wake-helper[data-dismissed="true"] {
+  display: none !important;
 }
 
 .configuration-error {
@@ -389,6 +457,10 @@ h1 {
   opacity: 0;
   visibility: hidden;
   pointer-events: none;
+}
+
+.app-stage[data-state="ready"] .wake-helper {
+  display: block;
 }
 
 @keyframes orbit-spin {
@@ -469,6 +541,16 @@ h1 {
 
   .progress-track {
     margin-inline: auto;
+  }
+
+  .wake-guidance {
+    margin-inline: auto;
+  }
+
+  .wake-helper {
+    right: 0.7rem;
+    bottom: 0.7rem;
+    width: calc(100vw - 1.4rem);
   }
 }
 

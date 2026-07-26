@@ -15,11 +15,12 @@ function cachePolicy(pathname) {
   if (pathname === "/" || pathname === "/index.html") {
     return "no-cache";
   }
-  if (pathname === "/config.js") {
+  if (
+    pathname === "/config.js" ||
+    pathname === "/app.js" ||
+    pathname === "/styles.css"
+  ) {
     return "public, max-age=300, must-revalidate";
-  }
-  if (pathname === "/app.js" || pathname === "/styles.css") {
-    return "public, max-age=604800, immutable";
   }
   return "";
 }

@@ -10,6 +10,7 @@ from prompts.templates import (
     build_cover_letter_refinement_prompt,
     build_grounded_resume_prompt,
     build_resume_refinement_prompt,
+    build_truth_audit_repair_prompt,
 )
 from utils.docx_builder import (
     make_docx_from_text,
@@ -67,6 +68,9 @@ class GroundingAndDocumentTests(unittest.TestCase):
         self.assertIn("job description (requirements only; never candidate evidence)", lowered)
         self.assertIn("evidence: e###", lowered)
         self.assertIn("jd match: r###", lowered)
+        self.assertIn("natural professional voice", lowered)
+        self.assertIn("do not repeat the same lead verb", lowered)
+        self.assertIn("deterministic role bullet plan", lowered)
         self.assertNotIn("reasonable to infer", lowered)
         self.assertNotIn("quantify everything", lowered)
 
@@ -99,6 +103,24 @@ class GroundingAndDocumentTests(unittest.TestCase):
         self.assertIn("generic filler", resume_review)
         self.assertIn("prefer evidence that genuinely addresses", achievement_review)
         self.assertIn("remove generic enthusiasm", cover_review)
+
+    def test_truth_repair_prompt_removes_unverified_claims_instead_of_approving_them(self):
+        evidence = (
+            "[E001] section=experience | Prepared weekly SQL reports.\n"
+            "[R001] required | direct | evidence=E001 | Prepare reports"
+        )
+        prompt = build_truth_audit_repair_prompt(
+            draft="- Increased revenue by 40%.",
+            candidate_evidence=evidence,
+            deterministic_findings=(
+                "- C001 | unsupported_metric: 40% is absent from candidate evidence."
+            ),
+            role_bullet_plan="- ROLE001: 1 bullet",
+        ).lower()
+        self.assertIn("remove the unsupported fragment", prompt)
+        self.assertIn("never guess the missing evidence", prompt)
+        self.assertIn("deterministic truth audit", prompt)
+        self.assertIn("evidence: e###", prompt)
 
     def test_docx_uses_candidate_name_not_target_title(self):
         payload = make_docx_from_text(
@@ -135,6 +157,43 @@ BSc Statistics | Example University | 2021
         self.assertFalse(report.missing_sections)
         self.assertTrue(report.contact_retained)
         self.assertEqual(report.roles_retained, report.roles_expected)
+
+    def test_docx_uses_modern_single_column_ats_design_system(self):
+        source = """\
+Jane Doe
+jane@example.com | +254 700 000 000
+
+PROFESSIONAL SUMMARY
+Data analyst with verified reporting experience.
+
+PROFESSIONAL EXPERIENCE
+Data Analyst | Acme Ltd | 2022 - Present
+- Built weekly SQL reports for management.
+"""
+        payload = make_docx_from_text(source)
+        document = Document(io.BytesIO(payload))
+        section = document.sections[0]
+        self.assertEqual(round(section.page_width.inches, 1), 8.5)
+        self.assertEqual(round(section.page_height.inches, 1), 11.0)
+        self.assertLess(section.left_margin.inches, 1.0)
+        self.assertEqual(document.styles["Normal"].font.name, "Arial")
+        self.assertEqual(len(document.tables), 0)
+        self.assertFalse(
+            any(p.text.strip() for p in document.sections[0].header.paragraphs)
+        )
+        self.assertFalse(
+            any(p.text.strip() for p in document.sections[0].footer.paragraphs)
+        )
+        heading = next(
+            paragraph
+            for paragraph in document.paragraphs
+            if paragraph.text == "PROFESSIONAL SUMMARY"
+        )
+        self.assertEqual(heading.style.name, "Heading 1")
+        self.assertEqual(
+            str(heading.style.font.color.rgb),
+            "17365D",
+        )
 
     def test_docx_roundtrip_detects_lost_sections_and_content(self):
         source = """\
