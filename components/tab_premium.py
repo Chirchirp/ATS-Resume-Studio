@@ -20,7 +20,7 @@ from prompts.templates import (
     build_truth_audit_repair_prompt,
     get_recruiter_system_prompt,
 )
-from utils.ai_runtime import run_ai, user_safe_ai_error
+from utils.ai_runtime import resume_output_limit, run_ai, user_safe_ai_error
 from utils.ats_engine import AlignmentReport, analyze_alignment, top_requirement_text
 from utils.docx_builder import make_docx_from_text, validate_docx_roundtrip
 from utils.domain_profiles import (
@@ -37,6 +37,7 @@ from utils.evidence_engine import (
     build_safe_evidence_resume,
     compact_grounding_context,
     compact_optional_draft,
+    compact_prompt_block,
     compact_requirement_context,
     repair_grounded_resume_draft,
     role_bullet_plan_context,
@@ -581,10 +582,14 @@ def _render_resume_gen(prefs: dict):
             )
         target_pages = st.select_slider(
             "Target resume length",
-            options=[3, 4],
+            options=[1, 2, 3, 4],
             value=3,
             format_func=lambda pages: (
-                "3 pages" if pages == 3 else "4 pages maximum"
+                "1 page"
+                if pages == 1
+                else f"{pages} pages"
+                if pages < 4
+                else "4 pages maximum"
             ),
             help=(
                 "The generator respects this ceiling without padding. Actual pagination "
@@ -721,7 +726,6 @@ def _render_resume_gen(prefs: dict):
             matrix,
             preferred_per_role=preferred_bullets,
         )
-        grounding = compact_grounding_context(ledger, matrix, max_chars=18_000)
         domain = infer_domain_context(st.session_state["jd"] + "\n" + user_resume)
         strategies = available_strategies or build_positioning_strategies(
             ledger, matrix, domain
@@ -752,12 +756,6 @@ def _render_resume_gen(prefs: dict):
             limit=10,
         )
         st.session_state["key_reqs"] = "\n".join(f"- {item}" for item in requirements)
-        job_context = compact_requirement_context(
-            matrix,
-            job_title=job_title,
-            max_chars=6_000,
-        )
-
         with st.spinner("Building evidence-cited ATS resume draft…"):
             strategy_context = (
                 domain_prompt_context(domain)
@@ -768,78 +766,133 @@ def _render_resume_gen(prefs: dict):
                 + "\nPriority evidence IDs: "
                 + (", ".join(selected_strategy.evidence_ids) or "Use strongest verified evidence")
             )
-            try:
-                resume_prompt = build_grounded_resume_prompt(
-                    fields=fields_str,
-                    job_description=job_context,
-                    candidate_evidence=grounding,
-                    strategy_context=strategy_context,
-                    role_bullet_plan=role_bullet_plan_context(role_plans),
-                    previous_draft=(
-                        compact_optional_draft(
-                            existing_rout.get("resume", ""),
-                            max_chars=12_000,
-                        )
-                        if regenerate_requested
-                        else ""
-                    ),
-                    target_pages=target_pages,
-                )
-            except ValueError as exc:
-                st.error(str(exc))
-                return
-            raw_resume_draft = _call_ai(
-                resume_prompt,
-                system_prompt=RESUME_WRITER_SYSTEM_PROMPT,
-                temperature=0.15,
-                task="resume",
-                show_error=False,
+            output_limit = resume_output_limit(target_pages)
+            previous_visible = (
+                existing_rout.get("resume", "") if regenerate_requested else ""
             )
-            last_error = st.session_state.get("_last_call_ai_error", {})
-            if (
-                not raw_resume_draft
-                and _is_request_size_error(last_error)
-            ):
-                st.info(
-                    "Groq rejected the first payload size. Retrying automatically with "
-                    "a tighter evidence-preserving context and no previous draft."
-                )
-                retry_grounding = compact_grounding_context(
+            attempt_specs = (
+                {
+                    "evidence_chars": 10_000,
+                    "item_chars": 560,
+                    "job_chars": 2_500,
+                    "strategy_chars": 1_800,
+                    "role_chars": 2_500,
+                    "previous_chars": 4_000,
+                    "temperature": 0.15,
+                },
+                {
+                    "evidence_chars": 7_000,
+                    "item_chars": 360,
+                    "job_chars": 1_800,
+                    "strategy_chars": 900,
+                    "role_chars": 2_000,
+                    "previous_chars": 0,
+                    "temperature": 0.1,
+                },
+                {
+                    "evidence_chars": 5_000,
+                    "item_chars": 220,
+                    "job_chars": 1_200,
+                    "strategy_chars": 500,
+                    "role_chars": 1_500,
+                    "previous_chars": 0,
+                    "temperature": 0.05,
+                },
+            )
+            raw_resume_draft = ""
+            last_error: object = {}
+            attempt_input_chars = 0
+            for attempt_index, spec in enumerate(attempt_specs):
+                if attempt_index:
+                    st.info(
+                        f"Groq payload recovery {attempt_index}/2: retaining the "
+                        "highest-priority verified evidence in a smaller request."
+                    )
+                attempt_grounding = compact_grounding_context(
                     ledger,
                     matrix,
-                    max_chars=10_000,
-                    max_item_chars=420,
+                    max_chars=spec["evidence_chars"],
+                    max_item_chars=spec["item_chars"],
                 )
-                retry_job_context = compact_requirement_context(
+                attempt_job = compact_requirement_context(
                     matrix,
                     job_title=job_title,
-                    max_chars=3_500,
+                    max_chars=spec["job_chars"],
                 )
-                retry_prompt = build_grounded_resume_prompt(
-                    fields=fields_str,
-                    job_description=retry_job_context,
-                    candidate_evidence=retry_grounding,
-                    strategy_context=(
-                        f"Positioning: {selected_strategy.name}. "
-                        f"{selected_strategy.thesis}"
-                    ),
-                    role_bullet_plan=role_bullet_plan_context(role_plans),
-                    previous_draft="",
-                    target_pages=target_pages,
+                attempt_strategy = compact_prompt_block(
+                    strategy_context,
+                    max_chars=spec["strategy_chars"],
+                    omission_message="Additional positioning detail omitted.",
+                )
+                attempt_role_plan = role_bullet_plan_context(
+                    role_plans,
+                    max_chars=spec["role_chars"],
+                )
+                attempt_previous = (
+                    compact_optional_draft(
+                        previous_visible,
+                        max_chars=spec["previous_chars"],
+                    )
+                    if previous_visible and spec["previous_chars"]
+                    else ""
+                )
+                try:
+                    attempt_prompt = build_grounded_resume_prompt(
+                        fields=fields_str,
+                        job_description=attempt_job,
+                        candidate_evidence=attempt_grounding,
+                        strategy_context=attempt_strategy,
+                        role_bullet_plan=attempt_role_plan,
+                        previous_draft=attempt_previous,
+                        target_pages=target_pages,
+                    )
+                except ValueError as exc:
+                    st.error(str(exc))
+                    return
+                attempt_input_chars = len(
+                    RESUME_WRITER_SYSTEM_PROMPT + attempt_prompt
                 )
                 raw_resume_draft = _call_ai(
-                    retry_prompt,
+                    attempt_prompt,
                     system_prompt=RESUME_WRITER_SYSTEM_PROMPT,
-                    temperature=0.1,
+                    temperature=spec["temperature"],
+                    max_tokens=output_limit,
                     task="resume",
+                    show_error=False,
                 )
-            elif not raw_resume_draft:
-                message = (
-                    last_error.get("message", "The AI request could not be completed.")
-                    if isinstance(last_error, dict)
-                    else "The AI request could not be completed."
+                if raw_resume_draft:
+                    break
+                last_error = st.session_state.get("_last_call_ai_error", {})
+                if not _is_request_size_error(last_error):
+                    message = (
+                        last_error.get(
+                            "message", "The AI request could not be completed."
+                        )
+                        if isinstance(last_error, dict)
+                        else "The AI request could not be completed."
+                    )
+                    st.error(f"AI request failed: {message}")
+                    break
+
+            capacity_safe_fallback = False
+            if not raw_resume_draft and _is_request_size_error(last_error):
+                raw_resume_draft = build_safe_evidence_resume(
+                    ledger,
+                    st.session_state["jd"],
+                    role_plans,
                 )
-                st.error(f"AI request failed: {message}")
+                capacity_safe_fallback = True
+                st.warning(
+                    "Groq rejected all three bounded payloads. The app created a "
+                    "download-safe evidence-only resume instead of blocking generation. "
+                    "You can regenerate its wording later without losing verified facts."
+                )
+            st.session_state["last_resume_request"] = {
+                "target_pages": target_pages,
+                "output_limit": output_limit,
+                "final_input_estimate": max(1, attempt_input_chars // 4),
+                "capacity_safe_fallback": capacity_safe_fallback,
+            }
 
             resume_draft = clean_resume_output(raw_resume_draft)
         if not resume_draft:
@@ -853,12 +906,16 @@ def _render_resume_gen(prefs: dict):
         first_validation = validate_grounded_resume_draft(
             resume_draft, ledger, st.session_state["jd"]
         )
-        review_pass = "single_pass"
+        review_pass = (
+            "capacity_safe_evidence_recovery"
+            if capacity_safe_fallback
+            else "single_pass"
+        )
         validation = first_validation
-        if verified_two_pass:
+        if verified_two_pass and not capacity_safe_fallback:
             refinement_prompt = build_resume_refinement_prompt(
                 draft=resume_draft,
-                candidate_evidence=grounding,
+                candidate_evidence=attempt_grounding,
                 deterministic_findings=_validation_findings(first_validation),
             )
             with st.spinner("Reviewing evidence, JD mappings, and specificity…"):
@@ -866,6 +923,7 @@ def _render_resume_gen(prefs: dict):
                     refinement_prompt,
                     system_prompt=RESUME_WRITER_SYSTEM_PROMPT,
                     temperature=0.05,
+                    max_tokens=output_limit,
                     task="resume",
                     show_error=False,
                 )
@@ -933,7 +991,11 @@ def _render_resume_gen(prefs: dict):
             "used_resume": True,
             "candidate_name": alignment.resume.candidate_name,
             "validation": validation,
-            "validation_mode": "evidence_cited_generation",
+            "validation_mode": (
+                "deterministic_capacity_recovery"
+                if capacity_safe_fallback
+                else "evidence_cited_generation"
+            ),
             "review_pass": review_pass,
             "source_hash": ledger.source_hash,
             "strategy_id": selected_strategy.id,

@@ -27,6 +27,13 @@ TASK_OUTPUT_LIMITS = {
     "resume": 4600,
 }
 
+RESUME_OUTPUT_LIMITS = {
+    1: 1_400,
+    2: 2_400,
+    3: 3_400,
+    4: 4_300,
+}
+
 GROQ_MODEL_FALLBACKS = {
     "openai/gpt-oss-120b": "openai/gpt-oss-20b",
     "qwen/qwen3.6-27b": "openai/gpt-oss-120b",
@@ -38,6 +45,12 @@ class TokenBudgetError(RuntimeError):
     """Raised before a request that would exceed the configured session budget."""
 
 
+def resume_output_limit(target_pages: int) -> int:
+    """Reserve enough completion space for the selected 1–4 page document."""
+    pages = max(1, min(4, int(target_pages)))
+    return RESUME_OUTPUT_LIMITS[pages]
+
+
 def reasoning_effort_for_task(
     task: str,
     provider: str,
@@ -45,7 +58,9 @@ def reasoning_effort_for_task(
     configured_effort: str,
 ) -> str:
     """Keep short Groq tasks from consuming their output budget on hidden reasoning."""
-    if provider != "groq" or task != "classification":
+    if provider != "groq":
+        return configured_effort
+    if task not in {"classification", "resume"}:
         return configured_effort
     if model == "qwen/qwen3.6-27b":
         return "none"

@@ -76,6 +76,19 @@ class GroundingAndDocumentTests(unittest.TestCase):
         self.assertNotIn("reasonable to infer", lowered)
         self.assertNotIn("quantify everything", lowered)
 
+    def test_full_resume_prompt_supports_one_page_target(self):
+        prompt = build_grounded_resume_prompt(
+            fields="Data Analytics",
+            job_description="SQL reporting required.",
+            candidate_evidence=(
+                "[E001] section=experience | verification=source_explicit | "
+                "Prepared weekly operational reports."
+            ),
+            target_pages=1,
+        ).lower()
+        self.assertIn("target one word page", prompt)
+        self.assertIn("450–750 words", prompt)
+
     def test_second_pass_prompts_require_evidence_and_target_genericity(self):
         evidence = (
             "[E001] section=experience | Prepared weekly SQL reports.\n"

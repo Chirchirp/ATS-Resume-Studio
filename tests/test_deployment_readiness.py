@@ -89,3 +89,12 @@ def test_cloudflare_worker_builds_from_repository_root():
     assert '"binding": "ASSETS"' in wrangler
     assert "Content-Security-Policy" in worker
     assert "environment.ASSETS.fetch(request)" in worker
+
+
+def test_resume_generation_has_adaptive_capacity_recovery_and_page_range():
+    source = (ROOT / "components" / "tab_premium.py").read_text(encoding="utf-8")
+    assert "options=[1, 2, 3, 4]" in source
+    assert "attempt_specs" in source
+    assert source.count('"evidence_chars":') >= 3
+    assert "build_safe_evidence_resume" in source
+    assert "deterministic_capacity_recovery" in source
