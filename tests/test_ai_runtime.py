@@ -22,6 +22,7 @@ class AiRuntimeTests(unittest.TestCase):
         )
 
     def test_document_tasks_preserve_configured_reasoning(self):
+        self.assertGreaterEqual(TASK_OUTPUT_LIMITS["resume"], 4_600)
         self.assertEqual(
             reasoning_effort_for_task(
                 "resume", "groq", "openai/gpt-oss-120b", "high"

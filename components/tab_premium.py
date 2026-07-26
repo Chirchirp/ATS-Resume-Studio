@@ -36,6 +36,8 @@ from utils.evidence_engine import (
     build_evidence_matrix,
     build_safe_evidence_resume,
     compact_grounding_context,
+    compact_optional_draft,
+    compact_requirement_context,
     repair_grounded_resume_draft,
     role_bullet_plan_context,
     strip_generation_annotations,
@@ -63,6 +65,7 @@ def _call_ai(
     temperature: float = 0.2,
     max_tokens: int | None = None,
     task: str = "query",
+    show_error: bool = True,
 ) -> str:
     try:
         result = run_ai(
@@ -77,9 +80,16 @@ def _call_ai(
                 f"Primary AI route was unavailable; "
                 f"{result.provider} / {result.model} completed this request."
             )
+        st.session_state.pop("_last_call_ai_error", None)
         return result.text
     except Exception as exc:
-        st.error(f"AI request failed: {user_safe_ai_error(exc)}")
+        message = user_safe_ai_error(exc)
+        st.session_state["_last_call_ai_error"] = {
+            "message": message,
+            "category": str(getattr(exc, "category", "")),
+        }
+        if show_error:
+            st.error(f"AI request failed: {message}")
         return ""
 
 
@@ -88,6 +98,16 @@ def _validation_rank(report: ClaimValidationReport) -> tuple[int, int, int]:
     high = sum(issue.severity == "high" for issue in report.issues)
     medium = sum(issue.severity == "medium" for issue in report.issues)
     return high, medium, -report.supported_claims
+
+
+def _is_request_size_error(error: object) -> bool:
+    if not isinstance(error, dict):
+        return False
+    category = str(error.get("category", ""))
+    message = str(error.get("message", "")).lower()
+    return category == "request_too_large" or (
+        category == "fallback_exhausted" and "too large" in message
+    )
 
 
 def _validation_findings(report: ClaimValidationReport, limit: int = 16) -> str:
@@ -559,6 +579,18 @@ def _render_resume_gen(prefs: dict):
                     "extra bullets follow available evidence and job relevance."
                 ),
             )
+        target_pages = st.select_slider(
+            "Target resume length",
+            options=[3, 4],
+            value=3,
+            format_func=lambda pages: (
+                "3 pages" if pages == 3 else "4 pages maximum"
+            ),
+            help=(
+                "The generator respects this ceiling without padding. Actual pagination "
+                "depends on verified evidence and the final Word layout."
+            ),
+        )
         available_strategies = st.session_state.get("positioning_strategies", [])
         strategy_names = [strategy.name for strategy in available_strategies]
         selected_strategy_name = st.selectbox(
@@ -689,7 +721,7 @@ def _render_resume_gen(prefs: dict):
             matrix,
             preferred_per_role=preferred_bullets,
         )
-        grounding = compact_grounding_context(ledger, matrix)
+        grounding = compact_grounding_context(ledger, matrix, max_chars=18_000)
         domain = infer_domain_context(st.session_state["jd"] + "\n" + user_resume)
         strategies = available_strategies or build_positioning_strategies(
             ledger, matrix, domain
@@ -720,6 +752,11 @@ def _render_resume_gen(prefs: dict):
             limit=10,
         )
         st.session_state["key_reqs"] = "\n".join(f"- {item}" for item in requirements)
+        job_context = compact_requirement_context(
+            matrix,
+            job_title=job_title,
+            max_chars=6_000,
+        )
 
         with st.spinner("Building evidence-cited ATS resume draft…"):
             strategy_context = (
@@ -734,27 +771,77 @@ def _render_resume_gen(prefs: dict):
             try:
                 resume_prompt = build_grounded_resume_prompt(
                     fields=fields_str,
-                    job_description=st.session_state["jd"],
+                    job_description=job_context,
                     candidate_evidence=grounding,
                     strategy_context=strategy_context,
                     role_bullet_plan=role_bullet_plan_context(role_plans),
                     previous_draft=(
-                        existing_rout.get("annotated_resume", "")
+                        compact_optional_draft(
+                            existing_rout.get("resume", ""),
+                            max_chars=12_000,
+                        )
                         if regenerate_requested
                         else ""
                     ),
+                    target_pages=target_pages,
                 )
             except ValueError as exc:
                 st.error(str(exc))
                 return
-            resume_draft = clean_resume_output(
-                _call_ai(
-                    resume_prompt,
+            raw_resume_draft = _call_ai(
+                resume_prompt,
+                system_prompt=RESUME_WRITER_SYSTEM_PROMPT,
+                temperature=0.15,
+                task="resume",
+                show_error=False,
+            )
+            last_error = st.session_state.get("_last_call_ai_error", {})
+            if (
+                not raw_resume_draft
+                and _is_request_size_error(last_error)
+            ):
+                st.info(
+                    "Groq rejected the first payload size. Retrying automatically with "
+                    "a tighter evidence-preserving context and no previous draft."
+                )
+                retry_grounding = compact_grounding_context(
+                    ledger,
+                    matrix,
+                    max_chars=10_000,
+                    max_item_chars=420,
+                )
+                retry_job_context = compact_requirement_context(
+                    matrix,
+                    job_title=job_title,
+                    max_chars=3_500,
+                )
+                retry_prompt = build_grounded_resume_prompt(
+                    fields=fields_str,
+                    job_description=retry_job_context,
+                    candidate_evidence=retry_grounding,
+                    strategy_context=(
+                        f"Positioning: {selected_strategy.name}. "
+                        f"{selected_strategy.thesis}"
+                    ),
+                    role_bullet_plan=role_bullet_plan_context(role_plans),
+                    previous_draft="",
+                    target_pages=target_pages,
+                )
+                raw_resume_draft = _call_ai(
+                    retry_prompt,
                     system_prompt=RESUME_WRITER_SYSTEM_PROMPT,
-                    temperature=0.15,
+                    temperature=0.1,
                     task="resume",
                 )
-            )
+            elif not raw_resume_draft:
+                message = (
+                    last_error.get("message", "The AI request could not be completed.")
+                    if isinstance(last_error, dict)
+                    else "The AI request could not be completed."
+                )
+                st.error(f"AI request failed: {message}")
+
+            resume_draft = clean_resume_output(raw_resume_draft)
         if not resume_draft:
             return
         resume_draft = repair_grounded_resume_draft(
@@ -775,14 +862,29 @@ def _render_resume_gen(prefs: dict):
                 deterministic_findings=_validation_findings(first_validation),
             )
             with st.spinner("Reviewing evidence, JD mappings, and specificity…"):
-                reviewed_draft = clean_resume_output(
-                    _call_ai(
-                        refinement_prompt,
-                        system_prompt=RESUME_WRITER_SYSTEM_PROMPT,
-                        temperature=0.05,
-                        task="resume",
-                    )
+                reviewed_raw = _call_ai(
+                    refinement_prompt,
+                    system_prompt=RESUME_WRITER_SYSTEM_PROMPT,
+                    temperature=0.05,
+                    task="resume",
+                    show_error=False,
                 )
+                reviewed_draft = clean_resume_output(reviewed_raw)
+            if not reviewed_draft:
+                review_error = st.session_state.get("_last_call_ai_error", {})
+                if _is_request_size_error(review_error):
+                    st.info(
+                        "The resume draft was generated successfully. The optional "
+                        "second review pass was skipped because its combined draft and "
+                        "evidence payload exceeded provider capacity."
+                    )
+                elif isinstance(review_error, dict) and review_error.get("message"):
+                    st.warning(
+                        "The resume draft was generated successfully, but the optional "
+                        f"review pass was unavailable: {review_error['message']}"
+                    )
+                st.session_state.pop("last_ai_error", None)
+                st.session_state.pop("_last_call_ai_error", None)
             if reviewed_draft:
                 reviewed_draft = repair_grounded_resume_draft(
                     reviewed_draft,

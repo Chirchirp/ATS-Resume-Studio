@@ -20,6 +20,8 @@ STATUS_LABELS = {
     "missing": "🔴 Missing",
 }
 
+CLARIFICATION_MAX_CHARS = 2_000
+
 
 def _current_evidence():
     resume = st.session_state.get("resume", "")
@@ -145,6 +147,10 @@ def render_tab_evidence():
             st.write(
                 "Answer only with facts you can defend in an interview. Blank answers are treated as no evidence."
             )
+            st.caption(
+                "Keep each answer concise and evidence-rich. Maximum "
+                f"{CLARIFICATION_MAX_CHARS:,} characters per answer."
+            )
             existing = st.session_state.get("clarification_answers", {})
             with st.form(f"clarification_form_{ledger.source_hash}"):
                 values = {}
@@ -154,6 +160,11 @@ def render_tab_evidence():
                         question.prompt,
                         value=existing.get(question.id, ""),
                         height=100,
+                        max_chars=CLARIFICATION_MAX_CHARS,
+                        help=(
+                            "State the role or project, your personal action, tools or "
+                            "method, and only verified outcomes. Avoid pasting the full resume."
+                        ),
                         key=f"clarification_{ledger.source_hash}_{question.id}",
                     )
                 submitted = st.form_submit_button(

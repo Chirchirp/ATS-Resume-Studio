@@ -7,6 +7,8 @@ from utils.evidence_engine import (
     build_evidence_matrix,
     build_safe_evidence_resume,
     compact_grounding_context,
+    compact_optional_draft,
+    compact_requirement_context,
     generate_clarification_questions,
     repair_grounded_resume_draft,
     strip_generation_annotations,
@@ -161,6 +163,43 @@ class EvidenceEngineTests(unittest.TestCase):
         self.assertIn("title=Data Analyst", context)
         self.assertIn("employer=Acme Ltd", context)
         self.assertIn("type=bullet", context)
+
+    def test_compact_context_is_strictly_bounded_and_prioritizes_clarifications(self):
+        answers = {
+            "Q-R001": (
+                "In the Reporting Analyst role, I personally validated SQL extracts "
+                "before management reporting. " * 300
+            )
+        }
+        ledger = build_evidence_ledger(RESUME, answers)
+        matrix = build_evidence_matrix(JD, ledger)
+        context = compact_grounding_context(
+            ledger,
+            matrix,
+            max_chars=4_000,
+            max_item_chars=420,
+        )
+        self.assertLessEqual(len(context), 4_000)
+        self.assertIn("USER-CONFIRMED CLARIFICATIONS", context)
+        self.assertIn("verification=user_confirmed", context)
+        self.assertIn("REQUIREMENT COVERAGE", context)
+
+    def test_requirement_and_previous_draft_contexts_are_bounded(self):
+        ledger = build_evidence_ledger(RESUME)
+        matrix = build_evidence_matrix(JD * 30, ledger)
+        job_context = compact_requirement_context(
+            matrix,
+            job_title="Data Analyst",
+            max_chars=1_200,
+        )
+        previous = compact_optional_draft(
+            "PROFESSIONAL EXPERIENCE\n" + ("Verified source bullet.\n" * 2_000),
+            max_chars=2_000,
+        )
+        self.assertLessEqual(len(job_context), 1_200)
+        self.assertLessEqual(len(previous), 2_000)
+        self.assertIn("Target title: Data Analyst", job_context)
+        self.assertIn("omitted for model capacity", previous)
 
     def test_achievement_context_excludes_non_experience_content(self):
         ledger = build_evidence_ledger(RESUME)

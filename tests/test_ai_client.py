@@ -195,6 +195,7 @@ class AiClientTests(unittest.TestCase):
         too_large.response = SimpleNamespace(headers={})
         size_error = _safe_error(too_large, "groq", "model")
         self.assertEqual(size_error.category, "request_too_large")
+        self.assertTrue(size_error.retryable)
         self.assertIn("too large", str(size_error))
 
         bad_parameter = RuntimeError("request failed")
