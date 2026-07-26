@@ -39,6 +39,9 @@ def test_cloudflare_wrapper_contains_required_cold_boot_copy():
 
 
 def test_cloudflare_wrapper_has_recoverable_wake_flow_and_fresh_assets():
+    markup = (
+        ROOT / "cloudflare-wrapper" / "src" / "index.html"
+    ).read_text(encoding="utf-8")
     script = (
         ROOT / "cloudflare-wrapper" / "src" / "app.js"
     ).read_text(encoding="utf-8")
@@ -56,6 +59,8 @@ def test_cloudflare_wrapper_has_recoverable_wake_flow_and_fresh_assets():
     assert 'pathname === "/styles.css"' in worker
     assert "max-age=604800, immutable" not in worker
     assert "max-age=604800, immutable" not in headers
+    assert 'href="./styles.css?v=20260726-wake-recovery"' in markup
+    assert 'src="./app.js?v=20260726-wake-recovery"' in markup
 
 
 def test_cloudflare_wrapper_requires_runtime_streamlit_url():
