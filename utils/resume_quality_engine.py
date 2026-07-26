@@ -32,15 +32,45 @@ SECTION_ALIASES = {
         "competencies",
         "areas of expertise",
     },
-    "education": {"education", "academic background", "qualifications"},
+    "education": {
+        "education",
+        "academic background",
+        "education background",
+        "qualifications",
+    },
     "certifications": {
         "certifications",
         "certification",
         "licenses",
         "licences",
         "professional development",
+        "credentials",
+        "professional qualifications",
     },
     "projects": {"projects", "selected projects", "professional projects"},
+    "training": {"training", "courses", "training & professional development"},
+    "awards": {"awards", "awards & honors", "awards & honours", "honors", "honours"},
+    "languages": {"languages"},
+    "memberships": {
+        "memberships",
+        "professional memberships",
+        "affiliations",
+    },
+    "publications": {"publications"},
+    "volunteering": {
+        "volunteering",
+        "volunteer experience",
+        "community involvement",
+    },
+    "achievements": {
+        "achievements",
+        "key achievements",
+        "career highlights",
+        "selected achievements",
+        "accomplishments",
+    },
+    "references": {"references", "referees"},
+    "interests": {"interests", "professional interests", "hobbies"},
 }
 
 MONTH_PATTERN = (

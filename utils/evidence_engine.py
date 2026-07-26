@@ -21,12 +21,13 @@ from utils.ats_engine import (
     _content_terms,
     _normalize_term,
     _tokens,
+    canonical_resume_section,
     extract_job_profile,
     extract_resume_profile,
 )
 
 
-BULLET_RE = re.compile(r"^\s*[•*\-–—]\s+")
+BULLET_RE = re.compile(r"^\s*[•▪◦●\uf0b7*\-–—]\s+")
 ROLE_RE = re.compile(
     r"(?:\||\b(?:19\d{2}|20\d{2})\b\s*(?:-|–|—|to)\s*"
     r"(?:present|current|19\d{2}|20\d{2})\b)",
@@ -139,34 +140,7 @@ class RoleBulletPlan:
 
 
 def _section_heading(line: str) -> str | None:
-    cleaned = re.sub(r"[^a-z ]", "", line.lower()).strip()
-    aliases = {
-        "summary": ("summary", "profile", "objective"),
-        "skills": ("skills", "competencies", "expertise", "technologies"),
-        "experience": ("experience", "employment", "work history", "career history"),
-        "education": ("education", "academic"),
-        "certifications": ("certifications", "certificates", "licenses"),
-        "projects": ("projects",),
-        "training": ("training", "professional development", "courses"),
-        "awards": ("awards", "honors", "honours"),
-        "languages": ("languages",),
-        "memberships": ("memberships", "professional memberships", "affiliations"),
-        "publications": ("publications",),
-        "volunteering": (
-            "volunteering",
-            "volunteer experience",
-            "community involvement",
-        ),
-    }
-    for section, names in aliases.items():
-        if any(
-            cleaned == name
-            or cleaned.startswith(name + " ")
-            or cleaned.endswith(" " + name)
-            for name in names
-        ):
-            return section
-    return None
+    return canonical_resume_section(line)
 
 
 def _clean_evidence_line(line: str) -> str:
@@ -315,6 +289,9 @@ def build_evidence_ledger(
         "memberships",
         "publications",
         "volunteering",
+        "achievements",
+        "references",
+        "interests",
     ):
         for line in profile.sections.get(section, "").splitlines():
             add_item(
@@ -629,6 +606,9 @@ def compact_grounding_context(
         ("memberships", "MEMBERSHIPS — PRESERVE SOURCE RECORDS"),
         ("publications", "PUBLICATIONS — PRESERVE SOURCE RECORDS"),
         ("volunteering", "VOLUNTEER EXPERIENCE — PRESERVE SOURCE RECORDS"),
+        ("achievements", "KEY ACHIEVEMENTS — PRESERVE SOURCE RECORDS"),
+        ("references", "REFERENCES — PRESERVE SOURCE RECORDS"),
+        ("interests", "INTERESTS — PRESERVE SOURCE RECORDS"),
     )
     mandatory_start = used
     mandatory_budget = min(2_400, max(700, evidence_budget // 2))
@@ -1666,15 +1646,16 @@ def _source_backed_skill_lines(ledger: EvidenceLedger) -> list[str]:
     return lines
 
 
-def _gerund_clause(text: str) -> str:
+def _evidence_summary_sentence(text: str) -> str:
+    """Turn a source action into restrained first-person-implicit resume prose."""
     clean = _clean_evidence_line(text).rstrip(".")
     match = re.match(r"^([A-Za-z]+)\b(.*)$", clean)
     if not match:
-        return clean
-    gerund = _VERB_TO_GERUND.get(match.group(1).lower())
-    if not gerund:
-        return clean[0].lower() + clean[1:] if clean else clean
-    return gerund + match.group(2)
+        return clean.rstrip(".") + "." if clean else ""
+    lead = match.group(1).lower()
+    if lead in _VERB_TO_GERUND:
+        return "Has " + lead + match.group(2).rstrip(".") + "."
+    return clean.rstrip(".") + "."
 
 
 def _premium_summary_lines(ledger: EvidenceLedger) -> list[str]:
@@ -1704,21 +1685,6 @@ def _premium_summary_lines(ledger: EvidenceLedger) -> list[str]:
                     + "."
                 )
 
-    skill_lines = _source_backed_skill_lines(ledger)
-    skill_values: list[str] = []
-    for line in skill_lines:
-        _, _, values = line.partition(":")
-        skill_values.extend(value.strip() for value in values.split("|") if value.strip())
-    skill_values = list(dict.fromkeys(skill_values))
-    if skill_values:
-        lead = skill_values[:6]
-        joined = (
-            ", ".join(lead[:-1]) + f", and {lead[-1]}"
-            if len(lead) > 1
-            else lead[0]
-        )
-        sentences.append(f"Professional strengths include {joined}.")
-
     evidence = [
         item
         for item in ledger.items
@@ -1733,16 +1699,28 @@ def _premium_summary_lines(ledger: EvidenceLedger) -> list[str]:
             item.source_line,
         )
     )
-    clauses = [_gerund_clause(item.text) for item in evidence[:2]]
-    if clauses:
-        contribution = (
-            clauses[0]
-            if len(clauses) == 1
-            else clauses[0] + ", as well as " + clauses[1]
-        )
-        sentences.append(
-            "Selected contributions include " + contribution.rstrip(".") + "."
-        )
+    for item in evidence[:2]:
+        sentence = _evidence_summary_sentence(item.text)
+        if sentence:
+            sentences.append(sentence)
+
+    if len(sentences) < 3:
+        skill_lines = _source_backed_skill_lines(ledger)
+        skill_values: list[str] = []
+        for line in skill_lines:
+            _, _, values = line.partition(":")
+            skill_values.extend(
+                value.strip() for value in values.split("|") if value.strip()
+            )
+        skill_values = list(dict.fromkeys(skill_values))
+        if skill_values:
+            lead = skill_values[:4]
+            joined = (
+                ", ".join(lead[:-1]) + f", and {lead[-1]}"
+                if len(lead) > 1
+                else lead[0]
+            )
+            sentences.append(f"Works across {joined}.")
     return sentences[:4]
 
 
@@ -1832,6 +1810,9 @@ def enhance_resume_core_sections(
         "memberships",
         "publications",
         "volunteering",
+        "achievements",
+        "references",
+        "interests",
     )
     for section in additional_sections:
         records = [
@@ -1849,6 +1830,7 @@ def enhance_resume_core_sections(
         "skills",
         "experience",
         "projects",
+        "achievements",
         "education",
         "certifications",
         "training",
@@ -1857,6 +1839,8 @@ def enhance_resume_core_sections(
         "publications",
         "volunteering",
         "languages",
+        "interests",
+        "references",
     ]
     ordered = canonical_order + [
         section for section in original_order if section not in canonical_order
@@ -1874,6 +1858,9 @@ def enhance_resume_core_sections(
         "memberships": "PROFESSIONAL MEMBERSHIPS",
         "publications": "PUBLICATIONS",
         "volunteering": "VOLUNTEER EXPERIENCE",
+        "achievements": "KEY ACHIEVEMENTS",
+        "references": "REFERENCES",
+        "interests": "INTERESTS",
     }
     blocks = ["\n".join(prefix).strip()]
     for section in ordered:
@@ -1958,6 +1945,9 @@ def build_safe_evidence_resume(
         "memberships": "PROFESSIONAL MEMBERSHIPS",
         "publications": "PUBLICATIONS",
         "volunteering": "VOLUNTEER EXPERIENCE",
+        "achievements": "KEY ACHIEVEMENTS",
+        "references": "REFERENCES",
+        "interests": "INTERESTS",
     }
     for section, heading in additional_headings.items():
         records = [
@@ -2185,6 +2175,9 @@ def validate_grounded_resume_draft(
             "memberships",
             "publications",
             "volunteering",
+            "achievements",
+            "references",
+            "interests",
         )
     }
     current_section = ""

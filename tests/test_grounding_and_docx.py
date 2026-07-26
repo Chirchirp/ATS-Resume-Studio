@@ -2,6 +2,7 @@ import io
 import unittest
 
 from docx import Document
+from docx.oxml.ns import qn
 
 from prompts.templates import (
     RESUME_WRITER_SYSTEM_PROMPT,
@@ -172,6 +173,38 @@ BSc Statistics | Example University | 2021
         self.assertFalse(report.missing_sections)
         self.assertTrue(report.contact_retained)
         self.assertEqual(report.roles_retained, report.roles_expected)
+        self.assertEqual(report.bullets_retained, report.bullets_expected)
+
+    def test_docx_restores_inline_bullets_as_real_numbered_paragraphs(self):
+        source = """\
+Jane Doe
+jane@example.com
+
+PROFESSIONAL EXPERIENCE
+Data Analyst | Acme Ltd | 2022 - Present
+• Built weekly SQL reports. • Validated source data. • Trained report users.
+"""
+        payload = make_docx_from_text(source)
+        document = Document(io.BytesIO(payload))
+        bullet_paragraphs = [
+            paragraph
+            for paragraph in document.paragraphs
+            if paragraph._p.pPr is not None
+            and paragraph._p.pPr.find(qn("w:numPr")) is not None
+        ]
+        self.assertEqual(len(bullet_paragraphs), 3)
+        self.assertEqual(
+            [paragraph.text for paragraph in bullet_paragraphs],
+            [
+                "Built weekly SQL reports.",
+                "Validated source data.",
+                "Trained report users.",
+            ],
+        )
+        report = validate_docx_roundtrip(source, payload)
+        self.assertTrue(report.is_safe, report.issues)
+        self.assertEqual(report.bullets_expected, 3)
+        self.assertEqual(report.bullets_retained, 3)
 
     def test_docx_uses_modern_single_column_ats_design_system(self):
         source = """\

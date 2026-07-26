@@ -57,6 +57,64 @@ class AtsEngineTests(unittest.TestCase):
         )
         self.assertEqual(profile.contact.phones, ("+254 700 000 000",))
 
+    def test_extended_resume_sections_are_extracted_without_absorption(self):
+        profile = extract_resume_profile(
+            "Jane Doe\n"
+            "jane@example.com\n\n"
+            "PROFESSIONAL PROFILE\n"
+            "Data analyst supporting operational reporting.\n\n"
+            "TECHNICAL PROFICIENCIES\n"
+            "SQL, Power BI\n\n"
+            "PROFESSIONAL EXPERIENCE\n"
+            "Data Analyst | Acme Ltd | 2022 - Present\n"
+            "- Built weekly reports.\n\n"
+            "ACADEMIC BACKGROUND\n"
+            "BSc Statistics | Example University | 2021\n\n"
+            "PROFESSIONAL QUALIFICATIONS\n"
+            "Power BI Data Analyst Associate | 2024\n\n"
+            "KEY ACHIEVEMENTS\n"
+            "- Operations Insight Award | 2023\n\n"
+            "PROFESSIONAL MEMBERSHIPS\n"
+            "Data Management Association\n\n"
+            "REFERENCES\n"
+            "Available on request"
+        )
+        self.assertEqual(
+            profile.section_order,
+            (
+                "summary",
+                "skills",
+                "experience",
+                "education",
+                "certifications",
+                "achievements",
+                "memberships",
+                "references",
+            ),
+        )
+        self.assertIn("Operations Insight Award", profile.sections["achievements"])
+        self.assertEqual(
+            profile.certification_records[0].text,
+            "Power BI Data Analyst Associate | 2024",
+        )
+
+    def test_content_ending_in_training_is_not_promoted_to_a_heading(self):
+        profile = extract_resume_profile(
+            "Amina Kamau\n\n"
+            "CORE SKILLS\n"
+            "Business Partnership: Requirements gathering, management reporting, user training\n\n"
+            "PROFESSIONAL DEVELOPMENT\n"
+            "Smartsheet Core Product Training | 2021"
+        )
+        self.assertEqual(
+            profile.sections["skills"],
+            "Business Partnership: Requirements gathering, management reporting, user training",
+        )
+        self.assertEqual(
+            profile.sections["training"],
+            "Smartsheet Core Product Training | 2021",
+        )
+
     def test_extracts_structured_job_requirements(self):
         profile = extract_job_profile(JD)
         self.assertEqual(profile.title, "Senior Data Analyst")
