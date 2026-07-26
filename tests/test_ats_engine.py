@@ -45,6 +45,18 @@ BSc Statistics | Example University | 2020
 
 
 class AtsEngineTests(unittest.TestCase):
+    def test_role_date_ranges_are_not_extracted_as_phone_numbers(self):
+        profile = extract_resume_profile(
+            "Jane Doe\n"
+            "jane@example.com | +254 700 000 000\n\n"
+            "EXPERIENCE\n"
+            "Data Analyst | Acme Ltd | 2016 - 2020\n"
+            "- Prepared weekly reports.\n"
+            "Reporting Officer | Beta Ltd | 2012 - 2016\n"
+            "- Validated source data."
+        )
+        self.assertEqual(profile.contact.phones, ("+254 700 000 000",))
+
     def test_extracts_structured_job_requirements(self):
         profile = extract_job_profile(JD)
         self.assertEqual(profile.title, "Senior Data Analyst")

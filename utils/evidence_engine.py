@@ -147,6 +147,16 @@ def _section_heading(line: str) -> str | None:
         "education": ("education", "academic"),
         "certifications": ("certifications", "certificates", "licenses"),
         "projects": ("projects",),
+        "training": ("training", "professional development", "courses"),
+        "awards": ("awards", "honors", "honours"),
+        "languages": ("languages",),
+        "memberships": ("memberships", "professional memberships", "affiliations"),
+        "publications": ("publications",),
+        "volunteering": (
+            "volunteering",
+            "volunteer experience",
+            "community involvement",
+        ),
     }
     for section, names in aliases.items():
         if any(
@@ -298,6 +308,20 @@ def build_evidence_ledger(
             item_type="certification_record",
             source_line=record.source_line,
         )
+    for section in (
+        "training",
+        "awards",
+        "languages",
+        "memberships",
+        "publications",
+        "volunteering",
+    ):
+        for line in profile.sections.get(section, "").splitlines():
+            add_item(
+                section=section,
+                text=line,
+                item_type="additional_record",
+            )
 
     for question_id, answer in sorted((clarification_answers or {}).items()):
         clean = re.sub(r"\s+", " ", answer).strip()
@@ -543,6 +567,13 @@ def compact_grounding_context(
     ):
         add_line(line)
     if profile:
+        experience_depth = (
+            "established"
+            if (profile.estimated_years or 0) >= 8 or len(profile.roles) >= 3
+            else "mid-career"
+            if (profile.estimated_years or 0) >= 4 or len(profile.roles) >= 2
+            else "developing"
+        )
         profile_lines = (
             f"source_hash={profile.source_hash}",
             f"candidate_name={profile.candidate_name or 'not detected'}",
@@ -564,6 +595,8 @@ def compact_grounding_context(
                 if profile.estimated_years is not None
                 else "not reliably calculated"
             ),
+            f"career_depth_for_editorial_detail={experience_depth} "
+            "(context only; never state an inferred duration or seniority title)",
         )
         for line in profile_lines:
             add_line(line)
@@ -581,6 +614,50 @@ def compact_grounding_context(
         if added:
             included_ids.add(item.id)
         return added
+
+    # These records define the candidate's identity and qualifications. Keep them
+    # ahead of verbose role evidence so a capacity-constrained model cannot omit
+    # education, credentials, the original profile, or declared skills.
+    mandatory_sections = (
+        ("summary", "SOURCE SUMMARY"),
+        ("skills", "DECLARED SKILLS"),
+        ("education", "EDUCATION — COPY EVERY RECORD EXACTLY"),
+        ("certifications", "CERTIFICATIONS — COPY EVERY RECORD EXACTLY"),
+        ("training", "TRAINING — PRESERVE SOURCE RECORDS"),
+        ("awards", "AWARDS — PRESERVE SOURCE RECORDS"),
+        ("languages", "LANGUAGES — PRESERVE SOURCE RECORDS"),
+        ("memberships", "MEMBERSHIPS — PRESERVE SOURCE RECORDS"),
+        ("publications", "PUBLICATIONS — PRESERVE SOURCE RECORDS"),
+        ("volunteering", "VOLUNTEER EXPERIENCE — PRESERVE SOURCE RECORDS"),
+    )
+    mandatory_start = used
+    mandatory_budget = min(2_400, max(700, evidence_budget // 2))
+    mandatory_truncated = False
+    for section, label in mandatory_sections:
+        section_items = [
+            item
+            for item in ledger.items
+            if item.section == section and item.id not in included_ids
+        ]
+        if not section_items:
+            continue
+        add_line("")
+        if not add_line(f"{label}:"):
+            break
+        for item in section_items:
+            if used - mandatory_start >= mandatory_budget:
+                mandatory_truncated = True
+                break
+            if not append_item(item, "  "):
+                mandatory_truncated = True
+                break
+        if mandatory_truncated:
+            break
+    if mandatory_truncated:
+        add_line(
+            "[Additional source records omitted from the AI payload; code will "
+            "restore them exactly after generation.]"
+        )
 
     confirmed = [
         item for item in ledger.items if item.verification == "user_confirmed"
@@ -642,13 +719,7 @@ def compact_grounding_context(
                     if not append_item(item, "  "):
                         break
 
-    section_labels = (
-        ("summary", "SUMMARY"),
-        ("skills", "SKILLS"),
-        ("education", "EDUCATION"),
-        ("certifications", "CERTIFICATIONS"),
-        ("other", "CONTACT / OTHER SOURCE LINES"),
-    )
+    section_labels = (("other", "CONTACT / OTHER SOURCE LINES"),)
     for section, label in section_labels:
         section_items = [
             item
@@ -1426,12 +1497,400 @@ def repair_grounded_resume_draft(
     )
 
 
+_CAPABILITY_PATTERNS = (
+    (r"\bdata (?:analysis|analytics|analys(?:is|es|ed|ing))\b", "Data Analysis"),
+    (r"\bdata clean(?:ing|ed)?\b", "Data Cleaning"),
+    (r"\bdata (?:quality|integrity|validation|verification)\b", "Data Quality & Validation"),
+    (r"\b(?:dashboard|visuali[sz](?:ation|ations|ed|ing))\b", "Dashboarding & Visualization"),
+    (r"\b(?:reporting|management reports?|analytical reports?)\b", "Reporting & Management Insights"),
+    (r"\bdata pipelines?\b", "Data Pipelines"),
+    (r"\b(?:workflow|process) automat(?:ion|ed|ing)\b", "Workflow Automation"),
+    (r"\bprocess (?:improvement|optimi[sz]ation)\b", "Process Improvement"),
+    (r"\brequirements? gathering\b", "Requirements Gathering"),
+    (r"\bstakeholder (?:management|engagement|collaboration)\b", "Stakeholder Collaboration"),
+    (r"\b(?:training|trained|end-user support|user support)\b", "Training & User Support"),
+    (r"\b(?:documentation|documented|data dictionaries?)\b", "Documentation"),
+    (r"\b(?:compliance|hse|hygiene|phytosanitary)\b", "Compliance"),
+    (r"\b(?:forecasting|forecasted|budgeting|budgeted)\b", "Forecasting & Budgeting"),
+    (r"\b(?:project coordination|project management)\b", "Project Delivery"),
+    (r"\bdecision[- ]making\b", "Decision Support"),
+)
+
+_SKILL_GROUPS = (
+    (
+        "Data & Analytics",
+        {
+            "data analysis", "data science", "data cleaning", "data governance",
+            "data integrity", "data quality", "data visualization",
+            "data visualisation", "machine learning", "financial analysis",
+            "market research", "google analytics",
+        },
+    ),
+    (
+        "Tools & Technology",
+        {
+            "adobe creative suite", "amazon web services", "angular", "ansible",
+            "apache airflow", "aws", "azure", "c#", "c++", "ci/cd",
+            "cloud computing", "css", "django", "docker", "excel", "fastapi",
+            "figma", "flask", "gcp", "git", "go", "graphql", "html", "java",
+            "javascript", "jira", "kotlin", "kubernetes", "linux",
+            "microsoft excel", "mongodb", "mysql", "next.js", "node.js",
+            "oracle", "pandas", "php", "postgresql", "power bi", "python",
+            "pytorch", "r", "react", "redis", "salesforce", "smartsheet",
+            "snowflake", "spark", "spring", "sql", "tableau", "tensorflow",
+            "terraform", "typescript", "vue", "webpack",
+        },
+    ),
+    (
+        "Business & Delivery",
+        {
+            "agile", "business analysis", "change management", "crm",
+            "customer success", "process improvement", "process optimization",
+            "process optimisation", "product management", "project management",
+            "requirements gathering", "risk management", "stakeholder engagement",
+            "stakeholder management", "supply chain", "user research",
+        },
+    ),
+)
+
+_VERB_TO_GERUND = {
+    "achieved": "achieving",
+    "analysed": "analysing",
+    "analyzed": "analyzing",
+    "automated": "automating",
+    "built": "building",
+    "collaborated": "collaborating",
+    "created": "creating",
+    "delivered": "delivering",
+    "designed": "designing",
+    "developed": "developing",
+    "documented": "documenting",
+    "drove": "driving",
+    "implemented": "implementing",
+    "improved": "improving",
+    "led": "leading",
+    "managed": "managing",
+    "optimized": "optimizing",
+    "prepared": "preparing",
+    "reduced": "reducing",
+    "streamlined": "streamlining",
+    "supported": "supporting",
+    "trained": "training",
+    "validated": "validating",
+}
+
+
+def _display_skill(value: str) -> str:
+    """Format a source-backed skill without turning it into a new claim."""
+    acronyms = {
+        "aws": "AWS", "c#": "C#", "c++": "C++", "ci/cd": "CI/CD",
+        "css": "CSS", "gcp": "GCP", "git": "Git", "go": "Go",
+        "graphql": "GraphQL", "html": "HTML", "java": "Java",
+        "javascript": "JavaScript", "jira": "Jira", "linux": "Linux",
+        "mongodb": "MongoDB", "mysql": "MySQL", "next.js": "Next.js",
+        "node.js": "Node.js", "oracle": "Oracle", "pandas": "Pandas",
+        "php": "PHP", "postgresql": "PostgreSQL", "power bi": "Power BI",
+        "python": "Python", "pytorch": "PyTorch", "r": "R", "react": "React",
+        "redis": "Redis", "sql": "SQL", "tableau": "Tableau",
+        "tensorflow": "TensorFlow", "typescript": "TypeScript",
+    }
+    clean = re.sub(r"\s+", " ", value).strip(" ,;|")
+    if clean.lower() in acronyms:
+        return acronyms[clean.lower()]
+    return clean.title() if clean == clean.lower() else clean
+
+
+def _source_backed_skill_lines(ledger: EvidenceLedger) -> list[str]:
+    """Build mature, grouped competencies only from candidate-source language."""
+    profile = ledger.profile
+    if not profile:
+        return []
+    source_text = _ledger_source_text(ledger)
+    detected = {
+        skill
+        for skill in SKILL_PHRASES
+        if re.search(r"(?<!\w)" + re.escape(skill) + r"(?!\w)", source_text, re.I)
+    }
+    declared = list(profile.declared_skills)
+    used: set[str] = set()
+    lines: list[str] = []
+    for label, vocabulary in _SKILL_GROUPS:
+        values: list[str] = []
+        for skill in sorted(detected):
+            normalized = _normalize_term(skill)
+            if skill not in vocabulary and normalized not in vocabulary:
+                continue
+            display = _display_skill(skill)
+            key = _normalize_term(display)
+            if key not in used:
+                values.append(display)
+                used.add(key)
+        for skill in declared:
+            normalized = _normalize_term(skill)
+            if normalized not in vocabulary:
+                continue
+            display = _display_skill(skill)
+            key = _normalize_term(display)
+            if key not in used:
+                values.append(display)
+                used.add(key)
+        if values:
+            lines.append(f"{label}: " + " | ".join(values[:12]))
+
+    source_known_skills = _known_skills(source_text)
+    capabilities = []
+    for pattern, label in _CAPABILITY_PATTERNS:
+        if not re.search(pattern, source_text, re.I):
+            continue
+        # A polished label may contain a known ATS skill phrase. Retain it only
+        # when that phrase is also present in the candidate source; otherwise a
+        # harmless grammatical normalization could incorrectly block download.
+        if _known_skills(label) - source_known_skills:
+            continue
+        capabilities.append(label)
+    capabilities = list(dict.fromkeys(capabilities))
+    if capabilities:
+        lines.append(
+            "Demonstrated Capabilities: " + " | ".join(capabilities[:12])
+        )
+
+    remaining = []
+    for skill in declared:
+        display = _display_skill(skill)
+        key = _normalize_term(display)
+        if key not in used and not re.search(r"\d", display):
+            remaining.append(display)
+            used.add(key)
+    if remaining:
+        lines.append("Domain & Professional: " + " | ".join(remaining[:12]))
+    return lines
+
+
+def _gerund_clause(text: str) -> str:
+    clean = _clean_evidence_line(text).rstrip(".")
+    match = re.match(r"^([A-Za-z]+)\b(.*)$", clean)
+    if not match:
+        return clean
+    gerund = _VERB_TO_GERUND.get(match.group(1).lower())
+    if not gerund:
+        return clean[0].lower() + clean[1:] if clean else clean
+    return gerund + match.group(2)
+
+
+def _premium_summary_lines(ledger: EvidenceLedger) -> list[str]:
+    """Create a multi-sentence source-only summary for shallow/fallback drafts."""
+    profile = ledger.profile
+    if not profile:
+        return []
+    source_summary = " ".join(
+        line.strip() for line in profile.summary_lines if line.strip()
+    ).strip()
+    sentences: list[str] = []
+    if source_summary:
+        sentences.append(source_summary.rstrip(".") + ".")
+    else:
+        titles = list(
+            dict.fromkeys(role.title for role in profile.roles if role.title)
+        )
+        if titles:
+            if len(titles) == 1:
+                sentences.append(
+                    f"{titles[0]} with experience grounded in a documented work history."
+                )
+            else:
+                sentences.append(
+                    f"{titles[0]} with a career background spanning "
+                    + ", ".join(titles[1:3])
+                    + "."
+                )
+
+    skill_lines = _source_backed_skill_lines(ledger)
+    skill_values: list[str] = []
+    for line in skill_lines:
+        _, _, values = line.partition(":")
+        skill_values.extend(value.strip() for value in values.split("|") if value.strip())
+    skill_values = list(dict.fromkeys(skill_values))
+    if skill_values:
+        lead = skill_values[:6]
+        joined = (
+            ", ".join(lead[:-1]) + f", and {lead[-1]}"
+            if len(lead) > 1
+            else lead[0]
+        )
+        sentences.append(f"Professional strengths include {joined}.")
+
+    evidence = [
+        item
+        for item in ledger.items
+        if item.section in {"experience", "projects"}
+        and item.item_type in {"bullet", "role_detail", "project_detail", "user_confirmed"}
+        and len(item.text.split()) >= 5
+    ]
+    evidence.sort(
+        key=lambda item: (
+            0 if item.metrics else 1,
+            0 if item.verification == "user_confirmed" else 1,
+            item.source_line,
+        )
+    )
+    clauses = [_gerund_clause(item.text) for item in evidence[:2]]
+    if clauses:
+        contribution = (
+            clauses[0]
+            if len(clauses) == 1
+            else clauses[0] + ", as well as " + clauses[1]
+        )
+        sentences.append(
+            "Selected contributions include " + contribution.rstrip(".") + "."
+        )
+    return sentences[:4]
+
+
+def _sectioned_resume(text: str) -> tuple[list[str], dict[str, list[str]], list[str]]:
+    """Split known resume sections while retaining any unclassified tail."""
+    prefix: list[str] = []
+    sections: dict[str, list[str]] = {}
+    order: list[str] = []
+    current = ""
+    for raw_line in text.splitlines():
+        heading = _section_heading(raw_line.strip())
+        if heading:
+            current = heading
+            if heading not in sections:
+                sections[heading] = []
+                order.append(heading)
+            continue
+        if current:
+            sections[current].append(raw_line)
+        else:
+            prefix.append(raw_line)
+    return prefix, sections, order
+
+
+def enhance_resume_core_sections(
+    generated_text: str,
+    ledger: EvidenceLedger,
+    *,
+    target_pages: int = 3,
+) -> str:
+    """Enforce premium depth and exact source records after model generation.
+
+    The model can improve prose and ordering, but code owns the sections that
+    are most damaging when omitted or hallucinated: qualifications and skills.
+    """
+    profile = ledger.profile
+    if not profile:
+        return generated_text
+    target_pages = max(1, min(4, int(target_pages)))
+    prefix, sections, original_order = _sectioned_resume(generated_text)
+
+    summary_text = " ".join(
+        line.strip() for line in sections.get("summary", []) if line.strip()
+    )
+    sentence_count = len(
+        [value for value in re.split(r"(?<=[.!?])\s+", summary_text) if value.strip()]
+    )
+    min_sentences = 2 if target_pages == 1 else 3
+    min_words = 35 if target_pages == 1 else 55
+    generic_opening = bool(
+        re.search(
+            r"\b(?:results-driven|dynamic professional|proven track record|"
+            r"seasoned professional|highly motivated)\b",
+            summary_text,
+            re.I,
+        )
+    )
+    if (
+        sentence_count < min_sentences
+        or len(summary_text.split()) < min_words
+        or generic_opening
+    ):
+        premium_summary = _premium_summary_lines(ledger)
+        if premium_summary:
+            sections["summary"] = premium_summary
+
+    skill_lines = _source_backed_skill_lines(ledger)
+    if skill_lines:
+        sections["skills"] = skill_lines
+    elif not profile.sections.get("skills", "").strip():
+        sections.pop("skills", None)
+
+    education = [record.text for record in profile.education_records]
+    certifications = [record.text for record in profile.certification_records]
+    if education:
+        sections["education"] = education
+    else:
+        sections.pop("education", None)
+    if certifications:
+        sections["certifications"] = certifications
+    else:
+        sections.pop("certifications", None)
+    additional_sections = (
+        "training",
+        "awards",
+        "languages",
+        "memberships",
+        "publications",
+        "volunteering",
+    )
+    for section in additional_sections:
+        records = [
+            line.strip()
+            for line in profile.sections.get(section, "").splitlines()
+            if line.strip()
+        ]
+        if records:
+            sections[section] = records
+        else:
+            sections.pop(section, None)
+
+    canonical_order = [
+        "summary",
+        "skills",
+        "experience",
+        "projects",
+        "education",
+        "certifications",
+        "training",
+        "awards",
+        "memberships",
+        "publications",
+        "volunteering",
+        "languages",
+    ]
+    ordered = canonical_order + [
+        section for section in original_order if section not in canonical_order
+    ]
+    headings = {
+        "summary": "PROFESSIONAL SUMMARY",
+        "skills": "CORE SKILLS",
+        "experience": "PROFESSIONAL EXPERIENCE",
+        "projects": "PROJECTS",
+        "education": "EDUCATION",
+        "certifications": "CERTIFICATIONS",
+        "training": "TRAINING & PROFESSIONAL DEVELOPMENT",
+        "awards": "AWARDS & HONORS",
+        "languages": "LANGUAGES",
+        "memberships": "PROFESSIONAL MEMBERSHIPS",
+        "publications": "PUBLICATIONS",
+        "volunteering": "VOLUNTEER EXPERIENCE",
+    }
+    blocks = ["\n".join(prefix).strip()]
+    for section in ordered:
+        content = "\n".join(sections.get(section, [])).strip()
+        if content:
+            blocks.append(f"{headings.get(section, section.upper())}\n{content}")
+    return re.sub(r"\n{3,}", "\n\n", "\n\n".join(block for block in blocks if block)).strip()
+
+
 def build_safe_evidence_resume(
     ledger: EvidenceLedger,
     jd_text: str,
     role_plans: tuple[RoleBulletPlan, ...] = (),
+    *,
+    target_pages: int = 3,
 ) -> str:
-    """Build a guaranteed source-only recovery version for blocked downloads."""
+    """Build a polished, guaranteed source-only recovery for blocked downloads."""
     profile = ledger.profile
     if not profile:
         return ""
@@ -1443,13 +1902,10 @@ def build_safe_evidence_resume(
     contacts = list(profile.contact.emails + profile.contact.phones + profile.contact.links)
     if contacts:
         lines.append(" | ".join(contacts))
-    if profile.summary_lines:
-        lines.extend(["", "PROFESSIONAL SUMMARY", *profile.summary_lines])
-    skill_lines = [
-        line.strip()
-        for line in profile.sections.get("skills", "").splitlines()
-        if line.strip()
-    ]
+    summary_lines = _premium_summary_lines(ledger)
+    if summary_lines:
+        lines.extend(["", "PROFESSIONAL SUMMARY", *summary_lines])
+    skill_lines = _source_backed_skill_lines(ledger)
     if skill_lines:
         lines.extend(["", "CORE SKILLS", *skill_lines])
 
@@ -1495,6 +1951,22 @@ def build_safe_evidence_resume(
                 *certification_lines,
             ]
         )
+    additional_headings = {
+        "training": "TRAINING & PROFESSIONAL DEVELOPMENT",
+        "awards": "AWARDS & HONORS",
+        "languages": "LANGUAGES",
+        "memberships": "PROFESSIONAL MEMBERSHIPS",
+        "publications": "PUBLICATIONS",
+        "volunteering": "VOLUNTEER EXPERIENCE",
+    }
+    for section, heading in additional_headings.items():
+        records = [
+            line.strip()
+            for line in profile.sections.get(section, "").splitlines()
+            if line.strip()
+        ]
+        if records:
+            tail.extend(["", heading, *records])
     if profile.projects:
         tail.extend(["", "PROJECTS"])
         for project in profile.projects:
@@ -1513,7 +1985,14 @@ def build_safe_evidence_resume(
                         use_source_wording=True,
                     )
                 )
-    return re.sub(r"\n{3,}", "\n\n", seed + "\n" + "\n".join(tail)).strip()
+    safe_resume = re.sub(
+        r"\n{3,}", "\n\n", seed + "\n" + "\n".join(tail)
+    ).strip()
+    return enhance_resume_core_sections(
+        safe_resume,
+        ledger,
+        target_pages=target_pages,
+    )
 
 
 def validate_grounded_resume_draft(
@@ -1697,7 +2176,16 @@ def validate_grounded_resume_draft(
             for item in ledger.items
             if item.section == section
         }
-        for section in ("education", "certifications")
+        for section in (
+            "education",
+            "certifications",
+            "training",
+            "awards",
+            "languages",
+            "memberships",
+            "publications",
+            "volunteering",
+        )
     }
     current_section = ""
     for line_number, raw_line in enumerate(visible_text.splitlines(), start=1):
@@ -1721,7 +2209,7 @@ def validate_grounded_resume_draft(
                         "candidate-source role record.",
                     )
                 )
-        elif current_section in {"education", "certifications"}:
+        elif current_section in source_section_lines:
             if (
                 normalized
                 and normalized not in source_section_lines[current_section]

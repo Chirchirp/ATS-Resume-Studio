@@ -39,6 +39,7 @@ from utils.evidence_engine import (
     compact_optional_draft,
     compact_prompt_block,
     compact_requirement_context,
+    enhance_resume_core_sections,
     repair_grounded_resume_draft,
     role_bullet_plan_context,
     strip_generation_annotations,
@@ -287,6 +288,11 @@ def _run_ai_truth_repair(
         jd_text,
         role_plans,
     )
+    repaired = enhance_resume_core_sections(
+        repaired,
+        ledger,
+        target_pages=rout.get("target_pages", 3),
+    )
     repaired_validation = validate_grounded_resume_draft(
         repaired,
         ledger,
@@ -297,7 +303,12 @@ def _run_ai_truth_repair(
     # AI never overrides the audit. If unsafe content remains, use the source-only
     # deterministic recovery so the user is not trapped behind an opaque block.
     if not repaired_validation.is_download_safe:
-        safe_version = build_safe_evidence_resume(ledger, jd_text, role_plans)
+        safe_version = build_safe_evidence_resume(
+            ledger,
+            jd_text,
+            role_plans,
+            target_pages=rout.get("target_pages", 3),
+        )
         safe_validation = validate_grounded_resume_draft(
             safe_version,
             ledger,
@@ -663,6 +674,7 @@ def _render_resume_gen(prefs: dict):
             current_ledger,
             st.session_state.get("jd", ""),
             role_plans,
+            target_pages=existing_rout.get("target_pages", 3),
         )
         safe_validation = validate_grounded_resume_draft(
             safe_annotated,
@@ -880,6 +892,7 @@ def _render_resume_gen(prefs: dict):
                     ledger,
                     st.session_state["jd"],
                     role_plans,
+                    target_pages=target_pages,
                 )
                 capacity_safe_fallback = True
                 st.warning(
@@ -902,6 +915,11 @@ def _render_resume_gen(prefs: dict):
             ledger,
             st.session_state["jd"],
             role_plans,
+        )
+        resume_draft = enhance_resume_core_sections(
+            resume_draft,
+            ledger,
+            target_pages=target_pages,
         )
         first_validation = validate_grounded_resume_draft(
             resume_draft, ledger, st.session_state["jd"]
@@ -950,6 +968,11 @@ def _render_resume_gen(prefs: dict):
                     st.session_state["jd"],
                     role_plans,
                 )
+                reviewed_draft = enhance_resume_core_sections(
+                    reviewed_draft,
+                    ledger,
+                    target_pages=target_pages,
+                )
                 reviewed_validation = validate_grounded_resume_draft(
                     reviewed_draft, ledger, st.session_state["jd"]
                 )
@@ -961,6 +984,26 @@ def _render_resume_gen(prefs: dict):
                     review_pass = "two_pass_reviewed"
                 else:
                     review_pass = "two_pass_rejected_unsafe_revision"
+
+        # A model draft never leaves the user trapped behind the download gate.
+        # If unsupported content remains after both repair stages, switch to the
+        # polished source-only version and keep all mandatory candidate sections.
+        if not validation.is_download_safe:
+            safe_draft = build_safe_evidence_resume(
+                ledger,
+                st.session_state["jd"],
+                role_plans,
+                target_pages=target_pages,
+            )
+            safe_validation = validate_grounded_resume_draft(
+                safe_draft,
+                ledger,
+                st.session_state["jd"],
+            )
+            if safe_validation.is_download_safe:
+                resume_draft = safe_draft
+                validation = safe_validation
+                review_pass = "automatic_premium_safe_recovery"
         achievements = _achievement_examples_from_resume(
             resume_draft, sum(plan.target for plan in role_plans) or preferred_bullets
         )
@@ -1002,6 +1045,7 @@ def _render_resume_gen(prefs: dict):
             "strategy_name": selected_strategy.name,
             "domain": domain.profile.label,
             "role_bullet_plan": role_plans,
+            "target_pages": target_pages,
         }
         st.session_state["ideal_resume"] = ideal_resume
         st.session_state.pop("truth_audit_resume_text", None)
@@ -1071,8 +1115,18 @@ def _render_resume_gen(prefs: dict):
             )
         elif rout.get("review_pass") == "safe_evidence_recovery":
             st.success(
-                "Safe recovery applied: wording, role headers, records, citations, and "
-                "JD mappings now come directly from verified candidate evidence."
+                "Premium safe recovery applied: the summary, grouped skills, role "
+                "coverage, qualifications, citations, and JD mappings now come from "
+                "verified candidate evidence."
+            )
+        elif rout.get("review_pass") in {
+            "capacity_safe_evidence_recovery",
+            "automatic_premium_safe_recovery",
+        }:
+            st.success(
+                "Automatic premium recovery passed the truth audit. The app retained "
+                "the candidate's full section structure and used source-backed wording "
+                "so downloads remain available."
             )
         elif rout.get("review_pass") == "ai_truth_repair":
             st.success(
@@ -1097,6 +1151,69 @@ def _render_resume_gen(prefs: dict):
                 + " · ".join(
                     f"{plan.role_header} ({plan.target})" for plan in role_plan
                 )
+            )
+        visible_resume = rout.get("resume", "")
+        visible_upper = visible_resume.upper()
+        retained_sections = [
+            label
+            for label in (
+                "PROFESSIONAL SUMMARY",
+                "CORE SKILLS",
+                "PROFESSIONAL EXPERIENCE",
+                "EDUCATION",
+                "CERTIFICATIONS",
+                "PROJECTS",
+            )
+            if label in visible_upper
+        ]
+        if retained_sections:
+            st.caption(
+                "Premium structure retained: " + " · ".join(retained_sections)
+            )
+        summary_match = re.search(
+            r"(?ims)^PROFESSIONAL SUMMARY\s*$\s*(.*?)"
+            r"(?=^(?:CORE SKILLS|PROFESSIONAL EXPERIENCE|EDUCATION|"
+            r"CERTIFICATIONS|PROJECTS)\s*$|\Z)",
+            visible_resume,
+        )
+        skills_match = re.search(
+            r"(?ims)^CORE SKILLS\s*$\s*(.*?)"
+            r"(?=^(?:PROFESSIONAL EXPERIENCE|EDUCATION|CERTIFICATIONS|"
+            r"PROJECTS)\s*$|\Z)",
+            visible_resume,
+        )
+        summary_sentences = (
+            len(
+                [
+                    value
+                    for value in re.split(
+                        r"(?<=[.!?])\s+",
+                        summary_match.group(1).strip(),
+                    )
+                    if value.strip()
+                ]
+            )
+            if summary_match
+            else 0
+        )
+        skill_groups = (
+            len(
+                [
+                    line
+                    for line in skills_match.group(1).splitlines()
+                    if ":" in line
+                ]
+            )
+            if skills_match
+            else 0
+        )
+        profile = current_ledger.profile
+        if profile:
+            st.caption(
+                f"Depth check: {summary_sentences} summary sentence(s) · "
+                f"{skill_groups} skill group(s) · {len(profile.roles)} exact role(s) · "
+                f"{len(profile.education_records)} education record(s) · "
+                f"{len(profile.certification_records)} certification record(s)."
             )
         if isinstance(validation, ClaimValidationReport):
             if source_changed:
@@ -1366,6 +1483,11 @@ def _render_resume_gen(prefs: dict):
                     current_ledger,
                     st.session_state.get("jd", ""),
                     role_plans,
+                )
+                edited_annotated = enhance_resume_core_sections(
+                    edited_annotated,
+                    current_ledger,
+                    target_pages=rout.get("target_pages", 3),
                 )
                 edited_validation = validate_grounded_resume_draft(
                     edited_annotated,
