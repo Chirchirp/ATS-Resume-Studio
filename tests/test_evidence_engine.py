@@ -8,9 +8,11 @@ from utils.evidence_engine import (
     build_safe_evidence_resume,
     compact_grounding_context,
     compact_optional_draft,
+    compact_prompt_block,
     compact_requirement_context,
     generate_clarification_questions,
     repair_grounded_resume_draft,
+    role_bullet_plan_context,
     strip_generation_annotations,
     validate_achievement_claims,
     validate_generated_claims,
@@ -200,6 +202,34 @@ class EvidenceEngineTests(unittest.TestCase):
         self.assertLessEqual(len(previous), 2_000)
         self.assertIn("Target title: Data Analyst", job_context)
         self.assertIn("omitted for model capacity", previous)
+        bounded_strategy = compact_prompt_block(
+            "Positioning guidance. " * 500,
+            max_chars=900,
+            omission_message="Strategy shortened.",
+        )
+        self.assertLessEqual(len(bounded_strategy), 900)
+        self.assertIn("Strategy shortened", bounded_strategy)
+
+    def test_role_plan_prompt_is_bounded(self):
+        multi_role_resume = "\n".join(
+            [
+                "Jane Doe",
+                "EXPERIENCE",
+                *[
+                    (
+                        f"Data Analyst {index} | Employer {index} | 202{index} - Present\n"
+                        f"- Prepared verified SQL report {index}."
+                    )
+                    for index in range(5)
+                ],
+            ]
+        )
+        ledger = build_evidence_ledger(multi_role_resume)
+        matrix = build_evidence_matrix(JD, ledger)
+        plans = allocate_role_bullet_targets(ledger, matrix, preferred_per_role=3)
+        context = role_bullet_plan_context(plans, max_chars=350)
+        self.assertLessEqual(len(context), 350)
+        self.assertIn("ROLE001", context)
 
     def test_achievement_context_excludes_non_experience_content(self):
         ledger = build_evidence_ledger(RESUME)

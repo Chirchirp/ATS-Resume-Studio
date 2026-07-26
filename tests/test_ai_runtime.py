@@ -1,6 +1,10 @@
 import unittest
 
-from utils.ai_runtime import TASK_OUTPUT_LIMITS, reasoning_effort_for_task
+from utils.ai_runtime import (
+    TASK_OUTPUT_LIMITS,
+    reasoning_effort_for_task,
+    resume_output_limit,
+)
 
 
 class AiRuntimeTests(unittest.TestCase):
@@ -21,13 +25,17 @@ class AiRuntimeTests(unittest.TestCase):
             "none",
         )
 
-    def test_document_tasks_preserve_configured_reasoning(self):
+    def test_resume_generation_uses_page_aware_output_and_efficient_reasoning(self):
         self.assertGreaterEqual(TASK_OUTPUT_LIMITS["resume"], 4_600)
+        self.assertEqual(
+            [resume_output_limit(page) for page in range(1, 5)],
+            [1_400, 2_400, 3_400, 4_300],
+        )
         self.assertEqual(
             reasoning_effort_for_task(
                 "resume", "groq", "openai/gpt-oss-120b", "high"
             ),
-            "high",
+            "low",
         )
 
 

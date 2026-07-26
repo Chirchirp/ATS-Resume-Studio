@@ -701,18 +701,33 @@ def compact_requirement_context(
 
 def compact_optional_draft(text: str, max_chars: int = 12_000) -> str:
     """Bound optional editorial context; candidate evidence remains authoritative."""
+    return compact_prompt_block(
+        text,
+        max_chars=max_chars,
+        omission_message=(
+            "Middle of previous draft omitted for model capacity; "
+            "use candidate evidence."
+        ),
+    )
+
+
+def compact_prompt_block(
+    text: str,
+    *,
+    max_chars: int,
+    omission_message: str = "Middle content omitted for model capacity.",
+) -> str:
+    """Bound non-authoritative prompt context while retaining its beginning and end."""
+    max_chars = max(400, int(max_chars))
     clean = (text or "").strip()
     if len(clean) <= max_chars:
         return clean
     head_chars = int(max_chars * 0.7)
-    tail_chars = max_chars - head_chars - 80
+    marker = f"\n[{omission_message}]\n"
+    tail_chars = max(80, max_chars - head_chars - len(marker))
     head = clean[:head_chars].rsplit("\n", 1)[0]
     tail = clean[-tail_chars:].split("\n", 1)[-1]
-    return (
-        head
-        + "\n[Middle of previous draft omitted for model capacity; use candidate evidence.]\n"
-        + tail
-    )
+    return (head + marker + tail)[:max_chars]
 
 
 def achievement_grounding_context(
@@ -1093,15 +1108,32 @@ def allocate_role_bullet_targets(
     )
 
 
-def role_bullet_plan_context(plans: tuple[RoleBulletPlan, ...]) -> str:
+def role_bullet_plan_context(
+    plans: tuple[RoleBulletPlan, ...],
+    max_chars: int = 4_000,
+) -> str:
     """Return prompt-safe role targets with exact source headers."""
     if not plans:
         return "No reliably parsed role records; preserve the source structure."
-    return "\n".join(
-        f"- {plan.role_id}: {plan.target} bullet(s) | exact_header="
-        f'"{plan.role_header}" | available_evidence={plan.available}'
-        for plan in plans
-    )
+    lines: list[str] = []
+    used = 0
+    for plan in plans:
+        header = re.sub(r"\s+", " ", plan.role_header).strip()
+        if len(header) > 600:
+            header = header[:597].rsplit(" ", 1)[0] + "..."
+        line = (
+            f"- {plan.role_id}: {plan.target} bullet(s) | exact_header="
+            f'"{header}" | available_evidence={plan.available}'
+        )
+        if used + len(line) + 1 > max_chars:
+            lines.append(
+                "- Additional role-plan detail omitted; preserve remaining ROLE headers "
+                "from the candidate evidence index."
+            )
+            break
+        lines.append(line)
+        used += len(line) + 1
+    return "\n".join(lines)[:max_chars]
 
 
 def _best_evidence_for_claim(

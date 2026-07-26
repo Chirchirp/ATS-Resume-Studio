@@ -221,7 +221,6 @@ def _safe_error(exc: Exception, provider: str, model: str = "") -> AIClientError
             "evidence-preserving context; if that also fails, shorten unusually long "
             "clarification answers.",
             category="request_too_large",
-            retryable=True,
         )
     if status_code == 429 or any(
         term in combined
@@ -317,7 +316,7 @@ def _groq_result(
     request: dict[str, Any] = {
         "messages": messages,
         "model": model,
-        "max_tokens": max_tokens,
+        "max_completion_tokens": max_tokens,
         "temperature": temperature,
     }
     if reasoning_effort:

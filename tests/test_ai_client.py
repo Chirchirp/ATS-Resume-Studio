@@ -37,6 +37,8 @@ class AiClientTests(unittest.TestCase):
         self.assertEqual(call["messages"][0], {"role": "system", "content": "System rules"})
         self.assertEqual(call["messages"][1]["role"], "user")
         self.assertEqual(call["temperature"], 0.0)
+        self.assertIn("max_completion_tokens", call)
+        self.assertNotIn("max_tokens", call)
 
     @patch("utils.ai_client.Groq")
     def test_sends_supported_reasoning_parameters_to_groq(self, groq_class):
@@ -195,7 +197,7 @@ class AiClientTests(unittest.TestCase):
         too_large.response = SimpleNamespace(headers={})
         size_error = _safe_error(too_large, "groq", "model")
         self.assertEqual(size_error.category, "request_too_large")
-        self.assertTrue(size_error.retryable)
+        self.assertFalse(size_error.retryable)
         self.assertIn("too large", str(size_error))
 
         bad_parameter = RuntimeError("request failed")

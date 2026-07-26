@@ -239,15 +239,25 @@ def build_grounded_resume_prompt(
         raise ValueError(
             "Full resume generation requires candidate evidence with stable evidence IDs."
         )
-    target_pages = 4 if int(target_pages) >= 4 else 3
-    length_guidance = (
-        "Target up to 4 Word pages and approximately 1,500–2,100 words. "
-        "Never exceed four pages and never pad weak or repetitive content."
-        if target_pages == 4
-        else
-        "Target approximately 3 Word pages and 1,100–1,600 words. "
-        "Use fewer words when the verified evidence does not justify three full pages."
-    )
+    target_pages = max(1, min(4, int(target_pages)))
+    length_guidance = {
+        1: (
+            "Target one Word page and approximately 450–750 words. Prioritize only the "
+            "strongest verified evidence and never shrink readability to force content."
+        ),
+        2: (
+            "Target up to 2 Word pages and approximately 750–1,150 words. Keep role "
+            "coverage concise and never pad weak or repetitive content."
+        ),
+        3: (
+            "Target approximately 3 Word pages and 1,100–1,600 words. Use fewer words "
+            "when the verified evidence does not justify three full pages."
+        ),
+        4: (
+            "Target up to 4 Word pages and approximately 1,500–2,100 words. Never exceed "
+            "four pages and never pad weak or repetitive content."
+        ),
+    }[target_pages]
     return (
         "Create an ATS-readable resume using the candidate evidence below.\n\n"
         "SOURCE-OF-TRUTH RULES:\n"
