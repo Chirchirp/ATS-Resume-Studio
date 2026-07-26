@@ -67,6 +67,16 @@ SECTION_ALIASES = {
     "education": ("education", "academic"),
     "certifications": ("certifications", "certificates", "licenses"),
     "projects": ("projects",),
+    "training": ("training", "professional development", "courses"),
+    "awards": ("awards", "honors", "honours"),
+    "languages": ("languages",),
+    "memberships": ("memberships", "professional memberships", "affiliations"),
+    "publications": ("publications",),
+    "volunteering": (
+        "volunteering",
+        "volunteer experience",
+        "community involvement",
+    ),
 }
 
 SKILL_PHRASES = {
@@ -539,10 +549,19 @@ def _contact_profile(text: str) -> ResumeContact:
             )
         )
     )
+    phone_candidates = [
+        re.sub(r"\s+", " ", match.group(0)).strip()
+        for match in re.finditer(r"(?:\+?\d[\d ()-]{7,}\d)", text)
+    ]
     phones = tuple(
         dict.fromkeys(
-            re.sub(r"\s+", " ", match.group(0)).strip()
-            for match in re.finditer(r"(?:\+?\d[\d ()-]{7,}\d)", text)
+            value
+            for value in phone_candidates
+            if not re.fullmatch(
+                r"(?:19|20)\d{2}\s*[-–—]\s*(?:19|20)\d{2}",
+                value,
+                re.I,
+            )
         )
     )
     links = tuple(

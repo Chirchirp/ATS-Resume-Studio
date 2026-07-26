@@ -1,3 +1,4 @@
+import re
 import unittest
 
 from utils.evidence_engine import (
@@ -10,6 +11,7 @@ from utils.evidence_engine import (
     compact_optional_draft,
     compact_prompt_block,
     compact_requirement_context,
+    enhance_resume_core_sections,
     generate_clarification_questions,
     repair_grounded_resume_draft,
     role_bullet_plan_context,
@@ -185,6 +187,29 @@ class EvidenceEngineTests(unittest.TestCase):
         self.assertIn("USER-CONFIRMED CLARIFICATIONS", context)
         self.assertIn("verification=user_confirmed", context)
         self.assertIn("REQUIREMENT COVERAGE", context)
+
+    def test_compact_context_reserves_qualifications_before_role_detail(self):
+        resume = RESUME + (
+            "\nCERTIFICATIONS\n"
+            "Microsoft Certified: Power BI Data Analyst Associate | 2024\n"
+        )
+        ledger = build_evidence_ledger(resume)
+        matrix = build_evidence_matrix(JD * 20, ledger)
+        context = compact_grounding_context(
+            ledger,
+            matrix,
+            max_chars=5_000,
+            max_item_chars=220,
+        )
+        self.assertLessEqual(len(context), 5_000)
+        self.assertIn("EDUCATION — COPY EVERY RECORD EXACTLY", context)
+        self.assertIn("BSc Statistics | Example University | 2021", context)
+        self.assertIn("CERTIFICATIONS — COPY EVERY RECORD EXACTLY", context)
+        self.assertIn(
+            "Microsoft Certified: Power BI Data Analyst Associate | 2024",
+            context,
+        )
+        self.assertIn("ROLE INDEX", context)
 
     def test_requirement_and_previous_draft_contexts_are_bounded(self):
         ledger = build_evidence_ledger(RESUME)
@@ -462,6 +487,95 @@ class EvidenceEngineTests(unittest.TestCase):
         self.assertTrue(report.is_download_safe, report.issues)
         self.assertIn("Data Analyst | Acme Ltd | 2022 - Present", safe)
         self.assertNotIn("AWS", strip_generation_annotations(safe))
+
+    def test_premium_core_repair_restores_depth_skills_and_qualifications(self):
+        resume = RESUME.replace(
+            "SKILLS\nPython, SQL",
+            (
+                "PROFESSIONAL SUMMARY\n"
+                "Data analyst focused on reliable reporting.\n\n"
+                "SKILLS\nPython, SQL, Microsoft Excel, Power BI, Data Quality"
+            ),
+        ) + (
+            "\nCERTIFICATIONS\n"
+            "Microsoft Certified: Power BI Data Analyst Associate | 2024\n"
+        )
+        ledger = build_evidence_ledger(resume)
+        matrix = build_evidence_matrix(JD, ledger)
+        plans = allocate_role_bullet_targets(ledger, matrix)
+        shallow = (
+            "Jane Doe\njane@example.com\n\n"
+            "PROFESSIONAL SUMMARY\n"
+            "Data professional.\n\n"
+            "CORE SKILLS\n"
+            "SQL\n\n"
+            "PROFESSIONAL EXPERIENCE\n"
+            "Data Analyst | Acme Ltd | 2022 - Present\n"
+            "- Built Python and SQL reporting pipelines used by 12 analysts.\n\n"
+            "EDUCATION\n"
+            "MSc Data Science | Fictional University | 2024"
+        )
+        repaired = repair_grounded_resume_draft(
+            shallow,
+            ledger,
+            JD,
+            plans,
+        )
+        premium = enhance_resume_core_sections(
+            repaired,
+            ledger,
+            target_pages=3,
+        )
+        visible = strip_generation_annotations(premium)
+        summary = visible.split("PROFESSIONAL SUMMARY", 1)[1].split(
+            "CORE SKILLS", 1
+        )[0]
+        self.assertGreaterEqual(
+            len(re.findall(r"(?<=[.!?])(?:\s+|$)", summary)),
+            3,
+        )
+        self.assertIn("Tools & Technology:", visible)
+        self.assertIn("Data & Analytics:", visible)
+        self.assertIn("BSc Statistics | Example University | 2021", visible)
+        self.assertIn(
+            "Microsoft Certified: Power BI Data Analyst Associate | 2024",
+            visible,
+        )
+        self.assertNotIn("Fictional University", visible)
+        report = validate_grounded_resume_draft(premium, ledger, JD)
+        self.assertTrue(report.is_download_safe, report.issues)
+
+    def test_premium_repair_preserves_additional_candidate_sections(self):
+        resume = RESUME + (
+            "\nTRAINING & PROFESSIONAL DEVELOPMENT\n"
+            "Advanced Data Visualization | 2023\n\n"
+            "AWARDS & HONORS\n"
+            "Operations Insight Award | 2022\n\n"
+            "PROFESSIONAL MEMBERSHIPS\n"
+            "Data Management Association\n\n"
+            "LANGUAGES\n"
+            "English | Swahili\n"
+        )
+        ledger = build_evidence_ledger(resume)
+        matrix = build_evidence_matrix(JD, ledger)
+        plans = allocate_role_bullet_targets(ledger, matrix)
+        safe = build_safe_evidence_resume(
+            ledger,
+            JD,
+            plans,
+            target_pages=3,
+        )
+        visible = strip_generation_annotations(safe)
+        self.assertIn("TRAINING & PROFESSIONAL DEVELOPMENT", visible)
+        self.assertIn("Advanced Data Visualization | 2023", visible)
+        self.assertIn("AWARDS & HONORS", visible)
+        self.assertIn("Operations Insight Award | 2022", visible)
+        self.assertIn("PROFESSIONAL MEMBERSHIPS", visible)
+        self.assertIn("Data Management Association", visible)
+        self.assertIn("LANGUAGES", visible)
+        self.assertIn("English | Swahili", visible)
+        report = validate_grounded_resume_draft(safe, ledger, JD)
+        self.assertTrue(report.is_download_safe, report.issues)
 
 
 if __name__ == "__main__":
