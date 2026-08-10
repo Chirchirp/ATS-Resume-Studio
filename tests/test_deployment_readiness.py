@@ -65,6 +65,7 @@ def test_cloudflare_wrapper_has_recoverable_wake_flow_and_fresh_assets():
     assert 'contentType.includes("text/plain")' in worker
     assert 'body === "ok"' in worker
     assert 'target.hostname.endsWith(".streamlit.app")' in worker
+    assert '/~/+/_stcore/health' in worker
     assert 'pathname === "/app.js"' in worker
     assert 'pathname === "/styles.css"' in worker
     assert "max-age=604800, immutable" not in worker
