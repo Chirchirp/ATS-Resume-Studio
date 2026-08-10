@@ -5,7 +5,10 @@ import streamlit as st
 from config.settings import (
     DEFAULT_PROVIDER,
     PROVIDERS,
+    clear_session_api_key,
     get_api_key,
+    get_api_key_source,
+    get_api_key_validation,
     get_available_models,
     get_default_model,
     get_model,
@@ -14,6 +17,7 @@ from config.settings import (
     get_reasoning_options,
     is_api_key_set,
     set_api_key,
+    set_api_key_validation,
 )
 from utils.ai_client import AIClientError, list_provider_models
 from utils.auth import DEFAULT_LOGIN_USERNAME, logout
@@ -21,22 +25,48 @@ from utils.auth import DEFAULT_LOGIN_USERNAME, logout
 
 def _provider_key_input(provider: str, prefix: str = ""):
     spec = PROVIDERS[provider]
-    existing = get_api_key(provider)
+    widget_key = f"{prefix}api_key_input_{provider}"
+    session_keys = st.session_state.get("provider_api_keys", {})
+    session_value = session_keys.get(provider, "") if isinstance(session_keys, dict) else ""
     entered = st.text_input(
         f"{spec['label']} API key",
         type="password",
-        value=st.session_state.get("provider_api_keys", {}).get(provider, ""),
+        value=session_value,
         placeholder=str(spec["placeholder"]),
         help=(
             "Held in server-side session state. You may alternatively use "
             f"Streamlit secret or environment variable {spec['secret']}."
         ),
-        key=f"{prefix}api_key_input_{provider}",
+        key=widget_key,
     )
     if entered:
         set_api_key(entered, provider)
-    if existing or entered:
-        st.success(f"{spec['label']} key available")
+    existing = get_api_key(provider)
+    source = get_api_key_source(provider)
+    validation = get_api_key_validation(provider)
+    if existing:
+        if validation == "verified":
+            st.success(f"{spec['label']} credential verified")
+        elif validation == "rejected":
+            st.error(
+                f"{spec['label']} rejected this credential. Replace it or clear the "
+                "session override, then test again."
+            )
+        else:
+            st.warning(f"{spec['label']} credential configured · not yet verified")
+        st.caption(f"Active source: **{source}**. No credential value is displayed.")
+        if source == "session override":
+            st.button(
+                "Clear session key override",
+                key=f"{prefix}clear_api_key_{provider}",
+                width="stretch",
+                on_click=clear_session_api_key,
+                args=(provider, widget_key),
+                help=(
+                    f"Remove the in-session key and fall back to {spec['secret']} "
+                    "from Streamlit Secrets or the environment."
+                ),
+            )
     else:
         st.caption(f"[Create a key]({spec['signup_url']})")
 
@@ -88,10 +118,13 @@ def render_sidebar() -> dict:
                     discovered = list_provider_models(
                         selected_provider, get_api_key(selected_provider)
                     )
+                    set_api_key_validation(selected_provider, "verified")
                     st.session_state[f"discovered_models_{selected_provider}"] = discovered
                     st.success(f"Found {len(discovered)} active models.")
                     st.rerun()
                 except AIClientError as exc:
+                    if exc.category == "authentication":
+                        set_api_key_validation(selected_provider, "rejected")
                     st.error(str(exc))
 
         model_key = f"model_{selected_provider}"
@@ -185,6 +218,7 @@ def render_sidebar() -> dict:
                         selected_provider,
                         get_api_key(selected_provider),
                     )
+                    set_api_key_validation(selected_provider, "verified")
                     current_model = get_model(selected_provider)
                     if (
                         current_model in active_models
@@ -203,6 +237,8 @@ def render_sidebar() -> dict:
                             "that is available."
                         )
                 except AIClientError as exc:
+                    if exc.category == "authentication":
+                        set_api_key_validation(selected_provider, "rejected")
                     st.error(str(exc))
 
         with st.expander("Task-based model routing", expanded=False):

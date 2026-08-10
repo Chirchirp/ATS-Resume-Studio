@@ -193,7 +193,8 @@ def _safe_error(exc: Exception, provider: str, model: str = "") -> AIClientError
     ):
         return error(
             f"Invalid API key: {provider_name} rejected the credential. Replace or rotate it in "
-            "the sidebar, then use **Test current setup**.",
+            "the sidebar, or clear an older session override, then use "
+            "**Test current setup**. A configured key is not necessarily a verified key.",
             category="authentication",
         )
     if status_code == 403 or "permission" in combined:
