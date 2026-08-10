@@ -33,7 +33,7 @@ def test_cloudflare_wrapper_contains_required_cold_boot_copy():
         "Application paused due to inactivity. click “Get this app back up.” "
         "Initial startup may take a short time."
     ) in markup
-    assert "Wake app directly" in markup
+    assert "Wake ATS Resume Studio" in markup
     assert 'id="helper-direct-link"' in markup
     assert 'id="retry-button"' in markup
 
@@ -54,13 +54,23 @@ def test_cloudflare_wrapper_has_recoverable_wake_flow_and_fresh_assets():
     assert "atsStudioWakeAttempt" in script
     assert "wake_retry" in script
     assert "setFrameSource" in script
+    assert 'STATUS_ENDPOINT = "/api/streamlit-status"' in script
+    assert 'result.status === "ready"' in script
+    assert "loadReadyStudio" in script
+    assert 'stage.dataset.state = "ready"' in script
+    assert 'frame.addEventListener("load"' in script
+    assert 'frame.addEventListener(\n    "load"' not in script
     assert "setTimeout(revealStudio, 6500)" not in script
+    assert 'const STATUS_PATH = "/api/streamlit-status"' in worker
+    assert 'contentType.includes("text/plain")' in worker
+    assert 'body === "ok"' in worker
+    assert 'target.hostname.endsWith(".streamlit.app")' in worker
     assert 'pathname === "/app.js"' in worker
     assert 'pathname === "/styles.css"' in worker
     assert "max-age=604800, immutable" not in worker
     assert "max-age=604800, immutable" not in headers
-    assert 'href="./styles.css?v=20260726-wake-recovery"' in markup
-    assert 'src="./app.js?v=20260726-wake-recovery"' in markup
+    assert 'href="./styles.css?v=20260810-readiness-gate"' in markup
+    assert 'src="./app.js?v=20260810-readiness-gate"' in markup
 
 
 def test_cloudflare_wrapper_requires_runtime_streamlit_url():

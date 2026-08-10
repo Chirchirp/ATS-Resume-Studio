@@ -9,9 +9,9 @@
     >
     <meta name="theme-color" content="#07111f">
     <title>ATS Resume Studio</title>
-    <link rel="stylesheet" href="./styles.css?v=20260726-wake-recovery">
+    <link rel="stylesheet" href="./styles.css?v=20260810-readiness-gate">
     <script src="./config.js" defer></script>
-    <script src="./app.js?v=20260726-wake-recovery" defer></script>
+    <script src="./app.js?v=20260810-readiness-gate" defer></script>
   </head>
   <body>
     <main class="app-stage" data-state="starting">
@@ -56,10 +56,11 @@
               <span></span>
             </div>
             <p id="wake-progress" class="wake-progress">Preparing your workspace…</p>
-            <p class="wake-guidance">
-              Streamlit Community Cloud may need 30–120 seconds after inactivity.
-              If the embedded wake screen stalls, use the direct wake page below.
-            </p>
+            <ol class="wake-steps">
+              <li>Open the secure Streamlit wake page.</li>
+              <li>Click “Yes, get this app back up!” there.</li>
+              <li>Return here; reconnection is automatic.</li>
+            </ol>
             <a
               id="direct-link"
               class="direct-link"
@@ -67,7 +68,7 @@
               target="_blank"
               rel="noopener noreferrer"
             >
-              Wake app directly
+              Wake ATS Resume Studio
             </a>
           </div>
         </div>
@@ -84,7 +85,7 @@
 
       <aside class="wake-helper" aria-live="polite" aria-label="Streamlit wake assistance">
         <p id="wake-helper-message">
-          Still seeing “Zzzz” or a long startup? Wake Streamlit directly, then return here.
+          Need to restart the app? Open Streamlit’s wake page, then return here.
         </p>
         <div class="wake-helper-actions">
           <a
@@ -93,9 +94,9 @@
             target="_blank"
             rel="noopener noreferrer"
           >
-            Open wake page
+            Open Streamlit wake page
           </a>
-          <button id="retry-button" type="button">Reload embedded app</button>
+          <button id="retry-button" type="button">Check connection</button>
           <button id="dismiss-helper" type="button" aria-label="Dismiss wake assistance">
             Dismiss
           </button>
