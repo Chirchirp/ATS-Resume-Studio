@@ -48,7 +48,10 @@ function validatedStreamlitUrl(value) {
 
   target.search = "";
   target.hash = "";
-  target.pathname = `${target.pathname.replace(/\/+$/, "")}/_stcore/health`;
+  // Community Cloud serves the running Streamlit runtime below /~/+/. The
+  // public root remains a hosting shell and redirects its own _stcore route
+  // even after the app is awake.
+  target.pathname = `${target.pathname.replace(/\/+$/, "")}/~/+/_stcore/health`;
   return target;
 }
 
