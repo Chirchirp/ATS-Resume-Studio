@@ -11,6 +11,9 @@ const errorPanel = document.querySelector(".configuration-error");
 const errorMessage = document.querySelector("#configuration-message");
 const configuration = window.ATS_STUDIO_CONFIG;
 const WAKE_ATTEMPT_KEY = "atsStudioWakeAttempt";
+const STATUS_ENDPOINT = "/api/streamlit-status";
+const POLL_INTERVAL_MS = 5000;
+const STATUS_TIMEOUT_MS = 12000;
 
 const progressMessages = [
   "Preparing your workspace…",
@@ -41,12 +44,21 @@ function setFrameSource(publicUrl, reason = "") {
   frame.src = embedUrl.toString();
 }
 
+function setWakeState(state, progress, guidance) {
+  stage.dataset.state = state;
+  progressText.textContent = progress;
+  if (guidance) {
+    helperMessage.textContent = guidance;
+  }
+}
+
 function recordWakeAttempt() {
   window.sessionStorage.setItem(WAKE_ATTEMPT_KEY, Date.now().toString());
-  progressText.textContent =
-    "Wake page opened. Click Streamlit’s wake button, then return here.";
-  helperMessage.textContent =
-    "After Streamlit reports that the app is waking, return here and reload the embedded app.";
+  setWakeState(
+    "waiting",
+    "Wake page opened — waiting for Streamlit to start…",
+    "Click “Yes, get this app back up!” in the new tab. This page reconnects automatically."
+  );
 }
 
 function recentlyAttemptedWake() {
@@ -74,37 +86,24 @@ function startStudio() {
   helperDirectLink.href = publicUrl.toString();
   directLink.addEventListener("click", recordWakeAttempt);
   helperDirectLink.addEventListener("click", recordWakeAttempt);
-  retryButton.addEventListener("click", () => {
-    helperMessage.textContent = "Reloading the embedded Streamlit application…";
-    setFrameSource(publicUrl.toString(), "manual");
-  });
   dismissHelper.addEventListener("click", () => {
     wakeHelper.dataset.dismissed = "true";
   });
-  document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "visible" && recentlyAttemptedWake()) {
-      helperMessage.textContent =
-        "Welcome back. Reloading the app after the Streamlit wake attempt…";
-      window.setTimeout(
-        () => setFrameSource(publicUrl.toString(), "return"),
-        750
-      );
-    }
-  });
 
-  setFrameSource(
-    publicUrl.toString(),
-    recentlyAttemptedWake() ? "recent-attempt" : ""
-  );
-
-  const startedAt = performance.now();
   let messageIndex = 0;
   const progressTimer = window.setInterval(() => {
+    if (stage.dataset.state === "sleeping") {
+      return;
+    }
     messageIndex = Math.min(messageIndex + 1, progressMessages.length - 1);
     progressText.textContent = progressMessages[messageIndex];
   }, 1250);
 
   let revealed = false;
+  let frameStarted = false;
+  let pollTimer;
+  let checking = false;
+
   const revealStudio = () => {
     if (revealed) {
       return;
@@ -115,14 +114,100 @@ function startStudio() {
     document.querySelector(".wake-screen").setAttribute("aria-hidden", "true");
   };
 
-  frame.addEventListener(
-    "load",
-    () => {
-      const elapsed = performance.now() - startedAt;
-      window.setTimeout(revealStudio, Math.max(0, 3200 - elapsed));
-    },
-    { once: true }
-  );
+  const loadReadyStudio = (reason) => {
+    if (frameStarted) {
+      return;
+    }
+    frameStarted = true;
+    setWakeState(
+      "connecting",
+      "Streamlit is awake. Opening your workspace…",
+      "The application is awake and reconnecting."
+    );
+    frame.addEventListener("load", () => window.setTimeout(revealStudio, 900), {
+      once: true,
+    });
+    setFrameSource(publicUrl.toString(), reason);
+  };
+
+  const scheduleCheck = (delay = POLL_INTERVAL_MS) => {
+    window.clearTimeout(pollTimer);
+    pollTimer = window.setTimeout(checkReadiness, delay);
+  };
+
+  const checkReadiness = async () => {
+    if (checking || revealed || frameStarted) {
+      return;
+    }
+    checking = true;
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), STATUS_TIMEOUT_MS);
+
+    try {
+      const statusUrl = new URL(STATUS_ENDPOINT, window.location.origin);
+      statusUrl.searchParams.set("url", publicUrl.toString());
+      statusUrl.searchParams.set("check", Date.now().toString());
+      const response = await fetch(statusUrl, {
+        cache: "no-store",
+        headers: { Accept: "application/json" },
+        signal: controller.signal,
+      });
+      const result = await response.json();
+
+      if (response.ok && result.status === "ready") {
+        loadReadyStudio(recentlyAttemptedWake() ? "woken" : "ready");
+        return;
+      }
+
+      if (result.status === "sleeping") {
+        setWakeState(
+          "sleeping",
+          recentlyAttemptedWake()
+            ? "Waiting for Streamlit to finish waking…"
+            : "Streamlit is paused. Use the button below to wake it.",
+          "The embedded app stays hidden until Streamlit confirms it is running."
+        );
+      } else {
+        setWakeState(
+          "waiting",
+          "Checking Streamlit again…",
+          "The readiness check is temporarily unavailable. You can still use the direct wake page."
+        );
+      }
+    } catch {
+      setWakeState(
+        "waiting",
+        "Connection check timed out. Retrying…",
+        "You can open the direct wake page while this page keeps checking."
+      );
+    } finally {
+      checking = false;
+      window.clearTimeout(timeout);
+      if (!revealed && !frameStarted) {
+        scheduleCheck();
+      }
+    }
+  };
+
+  retryButton.addEventListener("click", () => {
+    setWakeState("checking", "Checking Streamlit now…");
+    void checkReadiness();
+  });
+
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") {
+      setWakeState(
+        "checking",
+        recentlyAttemptedWake()
+          ? "Welcome back. Checking whether Streamlit is ready…"
+          : "Checking Streamlit…"
+      );
+      void checkReadiness();
+    }
+  });
+
+  window.addEventListener("focus", () => void checkReadiness());
+  void checkReadiness();
 }
 
 startStudio();
