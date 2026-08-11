@@ -70,6 +70,7 @@ def test_cloudflare_wrapper_has_recoverable_wake_flow_and_fresh_assets():
     assert "fragmentSessionToken" in script
     assert "event.origin !== publicUrl.origin" in script
     assert "event.source.postMessage" in script
+    assert '"postMessage" in event.source' not in script
     assert 'type === "ats-session-request"' in script
     assert 'type === "ats-session-save"' in script
     assert 'type === "ats-session-clear"' in script
