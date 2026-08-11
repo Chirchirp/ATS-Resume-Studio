@@ -635,6 +635,80 @@ Train end-users on dashboards and analytical outputs."""
         report = validate_grounded_resume_draft(premium, ledger, JD)
         self.assertTrue(report.is_download_safe, report.issues)
 
+    def test_strict_output_removes_named_extra_sections_and_invented_education(self):
+        ledger = build_evidence_ledger(RESUME)
+        generated = """Jane Doe
+jane@example.com
+
+PROFESSIONAL SUMMARY
+Data analyst focused on reporting.
+
+CORE SKILLS
+- Tools: Python | SQL
+
+PROFESSIONAL EXPERIENCE
+Data Analyst | Acme Ltd | 2022 - Present
+- Built Python and SQL reporting pipelines used by 12 analysts.
+
+EDUCATION
+Diploma in Information Technology | Kabete National Polytechnic | 2019
+
+PROJECTS
+Automated forecasting engine
+
+TRAINING & PROFESSIONAL DEVELOPMENT
+AI Leadership Programme
+
+CORE LEADERSHIP CAPABILITIES
+Strategic leadership
+
+SELECTED AI, AUTOMATION & ARCHITECTURE PORTFOLIO
+Enterprise AI platform
+
+LEADERSHIP & DELIVERY APPROACH
+Executive stakeholder leadership
+
+TECHNICAL ENVIRONMENT
+Kubernetes | Terraform
+"""
+        cleaned = enhance_resume_core_sections(generated, ledger, target_pages=2)
+        visible = strip_generation_annotations(cleaned)
+        for forbidden in (
+            "Kabete",
+            "PROJECTS",
+            "TRAINING & PROFESSIONAL DEVELOPMENT",
+            "CORE LEADERSHIP CAPABILITIES",
+            "SELECTED AI, AUTOMATION & ARCHITECTURE PORTFOLIO",
+            "LEADERSHIP & DELIVERY APPROACH",
+            "TECHNICAL ENVIRONMENT",
+            "Kubernetes",
+            "Terraform",
+        ):
+            self.assertNotIn(forbidden, visible)
+        self.assertIn("BSc Statistics | Example University | 2021", visible)
+
+    def test_education_is_omitted_when_candidate_source_has_none(self):
+        source = """Jane Doe
+jane@example.com
+
+SKILLS
+Python, SQL
+
+EXPERIENCE
+Data Analyst | Acme Ltd | 2022 - Present
+- Built SQL reporting workflows.
+"""
+        ledger = build_evidence_ledger(source)
+        generated = source + (
+            "\nEDUCATION\n"
+            "Diploma in Information Technology | Kabete National Polytechnic | 2019\n"
+        )
+        visible = strip_generation_annotations(
+            enhance_resume_core_sections(generated, ledger, target_pages=1)
+        )
+        self.assertNotIn("EDUCATION", visible)
+        self.assertNotIn("Kabete", visible)
+
     def test_premium_repair_keeps_only_simple_competitive_sections(self):
         resume = RESUME + (
             "\nTRAINING & PROFESSIONAL DEVELOPMENT\n"

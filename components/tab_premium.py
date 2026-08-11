@@ -215,6 +215,7 @@ EVIDENCE_INPUT_ISSUES = {
     "unsupported_certifications_record",
     "verification_placeholder",
 }
+RESUME_STRUCTURE_POLICY_VERSION = "simple_core_v3"
 
 
 def _truth_issue_action(issue_type: str) -> tuple[str, bool]:
@@ -302,12 +303,80 @@ def _update_repaired_resume_output(
                 "issues_after": len(validation.issues),
                 "download_safe": validation.is_download_safe,
             },
+            "structure_policy_version": RESUME_STRUCTURE_POLICY_VERSION,
         }
     )
     st.session_state["premium_resume_output"] = updated
     st.session_state["ideal_resume"] = visible
     st.session_state["claim_validation"] = validation
     st.session_state.pop("truth_audit_resume_text", None)
+
+
+def _apply_strict_resume_policy(
+    rout: dict,
+    ledger,
+    *,
+    preferred_bullets: int,
+) -> dict:
+    """Upgrade cached drafts to the current source-only five-section policy."""
+    if rout.get("structure_policy_version") == RESUME_STRUCTURE_POLICY_VERSION:
+        return rout
+    jd_text = st.session_state.get("jd", "")
+    target_pages = max(1, min(4, int(rout.get("target_pages", 3))))
+    matrix = build_evidence_matrix(jd_text, ledger)
+    role_plans = allocate_role_bullet_targets(
+        ledger,
+        matrix,
+        preferred_per_role=preferred_bullets,
+        target_pages=target_pages,
+    )
+    annotated = rout.get("annotated_resume") or rout.get("resume", "")
+    annotated = repair_grounded_resume_draft(
+        annotated,
+        ledger,
+        jd_text,
+        role_plans,
+    )
+    annotated = enhance_resume_core_sections(
+        annotated,
+        ledger,
+        target_pages=target_pages,
+    )
+    annotated = repair_grounded_resume_draft(
+        annotated,
+        ledger,
+        jd_text,
+        role_plans,
+    )
+    validation = validate_grounded_resume_draft(annotated, ledger, jd_text)
+    if not validation.is_download_safe:
+        annotated = build_safe_evidence_resume(
+            ledger,
+            jd_text,
+            role_plans,
+            target_pages=target_pages,
+        )
+        validation = validate_grounded_resume_draft(annotated, ledger, jd_text)
+    visible = clean_resume_output(strip_generation_annotations(annotated))
+    updated = dict(rout)
+    updated.update(
+        {
+            "resume": visible,
+            "annotated_resume": annotated,
+            "validation": validation,
+            "validation_mode": "strict_source_structure",
+            "review_pass": "strict_clean_structure",
+            "source_hash": ledger.source_hash,
+            "role_bullet_plan": role_plans,
+            "target_pages": target_pages,
+            "structure_policy_version": RESUME_STRUCTURE_POLICY_VERSION,
+        }
+    )
+    st.session_state["premium_resume_output"] = updated
+    st.session_state["ideal_resume"] = visible
+    st.session_state["claim_validation"] = validation
+    st.session_state.pop("truth_audit_resume_text", None)
+    return updated
 
 
 def _run_ai_truth_repair(
@@ -853,6 +922,7 @@ def _render_resume_gen(prefs: dict):
                 "review_pass": "safe_evidence_recovery",
                 "source_hash": current_ledger.source_hash,
                 "role_bullet_plan": role_plans,
+                "structure_policy_version": RESUME_STRUCTURE_POLICY_VERSION,
             }
         )
         st.session_state["premium_resume_output"] = updated
@@ -1206,6 +1276,7 @@ def _render_resume_gen(prefs: dict):
             "domain": domain.profile.label,
             "role_bullet_plan": role_plans,
             "target_pages": target_pages,
+            "structure_policy_version": RESUME_STRUCTURE_POLICY_VERSION,
         }
         st.session_state["ideal_resume"] = ideal_resume
         st.session_state.pop("truth_audit_resume_text", None)
@@ -1219,6 +1290,12 @@ def _render_resume_gen(prefs: dict):
             st.session_state.get("clarification_answers", {}),
         )
         source_changed = rout.get("source_hash") != current_ledger.source_hash
+        if not source_changed:
+            rout = _apply_strict_resume_policy(
+                rout,
+                current_ledger,
+                preferred_bullets=preferred_bullets,
+            )
         existing_validation = rout.get("validation")
         if (
             not source_changed
@@ -1269,6 +1346,11 @@ def _render_resume_gen(prefs: dict):
                 "Quality control: second-pass evidence, JD-mapping, and specificity "
                 "review completed."
             )
+        elif rout.get("review_pass") == "strict_clean_structure":
+            st.success(
+                "Clean-resume policy applied: unsupported education and non-standard "
+                "sections were removed without another AI call."
+            )
         elif rout.get("review_pass") == "two_pass_rejected_unsafe_revision":
             st.warning(
                 "The second-pass revision scored worse in the deterministic truth audit, "
@@ -1286,8 +1368,8 @@ def _render_resume_gen(prefs: dict):
         }:
             st.success(
                 "Automatic premium recovery passed the truth audit. The app retained "
-                "the candidate's full section structure and used source-backed wording "
-                "so downloads remain available."
+                "the clean standard structure and used source-backed wording so downloads "
+                "remain available."
             )
         elif rout.get("review_pass") == "ai_truth_repair":
             st.success(
@@ -1690,6 +1772,7 @@ def _render_resume_gen(prefs: dict):
                 updated["validation_mode"] = "manual_edit_with_deterministic_repair"
                 updated["source_hash"] = current_ledger.source_hash
                 updated["role_bullet_plan"] = role_plans
+                updated["structure_policy_version"] = RESUME_STRUCTURE_POLICY_VERSION
                 st.session_state["premium_resume_output"] = updated
                 st.session_state["ideal_resume"] = edited_visible
                 st.session_state["claim_validation"] = edited_validation
