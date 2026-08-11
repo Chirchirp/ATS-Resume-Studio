@@ -8,10 +8,12 @@ import streamlit as st
 
 from config.settings import (
     get_api_key,
+    get_api_key_validation,
     get_fallback_provider,
     get_provider,
     get_reasoning_effort,
     get_task_model,
+    set_api_key_validation,
 )
 from utils.ai_client import AIClientError, AIResult, get_ai_result_with_fallback
 
@@ -87,6 +89,16 @@ def run_ai(
 ) -> AIResult:
     provider = get_provider()
     model = get_task_model(task, provider)
+    if get_api_key_validation(provider) == "rejected":
+        raise AIClientError(
+            f"The configured {provider.title()} credential was already rejected. "
+            "Replace it or clear the session override in the sidebar, then use "
+            "**Test current setup**.",
+            provider=provider,
+            model=model,
+            category="authentication",
+            status_code=401,
+        )
     fallback_provider = get_fallback_provider()
     fallback_model = (
         get_task_model(task, fallback_provider) if fallback_provider else ""
@@ -151,6 +163,8 @@ def run_ai(
             cache_scope=st.session_state["ai_cache_scope"],
         )
     except AIClientError as exc:
+        if exc.category == "authentication":
+            set_api_key_validation(provider, "rejected")
         st.session_state["last_ai_error"] = {
             "provider": exc.provider or provider,
             "model": exc.model or model,
