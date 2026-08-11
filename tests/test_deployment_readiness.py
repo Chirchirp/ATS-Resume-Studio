@@ -65,6 +65,11 @@ def test_cloudflare_wrapper_has_recoverable_wake_flow_and_fresh_assets():
     assert 'window.addEventListener("pageshow"' in script
     assert 'window.addEventListener("online"' in script
     assert "atsResumeStudioSignedSession" in script
+    assert "AUTH_FRAGMENT_PREFIX" in script
+    assert "rememberSignedSession" in script
+    assert "fragmentSessionToken" in script
+    assert "event.origin !== publicUrl.origin" in script
+    assert "event.source.postMessage" in script
     assert 'type === "ats-session-request"' in script
     assert 'type === "ats-session-save"' in script
     assert 'type === "ats-session-clear"' in script
@@ -83,8 +88,8 @@ def test_cloudflare_wrapper_has_recoverable_wake_flow_and_fresh_assets():
     assert 'pathname === "/styles.css"' in worker
     assert "max-age=604800, immutable" not in worker
     assert "max-age=604800, immutable" not in headers
-    assert 'href="./styles.css?v=20260811-session-bridge"' in markup
-    assert 'src="./app.js?v=20260811-session-bridge"' in markup
+    assert 'href="./styles.css?v=20260811-nested-session-bridge"' in markup
+    assert 'src="./app.js?v=20260811-nested-session-bridge"' in markup
 
 
 def test_cloudflare_wrapper_requires_runtime_streamlit_url():
