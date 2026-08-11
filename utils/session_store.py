@@ -138,6 +138,9 @@ def _safe_generated_output(value: Any) -> dict[str, Any]:
         item = value.get(key)
         if isinstance(item, (str, int, float, bool)):
             safe[key] = item
+    alignment_gate = value.get("alignment_gate")
+    if isinstance(alignment_gate, Mapping):
+        safe["alignment_gate"] = _safe_value(alignment_gate)
     # Typed validation/role-plan objects are rebuilt deterministically on restore.
     safe["role_bullet_plan"] = []
     return safe

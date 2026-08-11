@@ -888,11 +888,11 @@ def _term_present(term: str, resume_text: str, resume_terms: set[str]) -> bool:
 
 SECTION_MATCH_WEIGHTS = {
     "experience": 1.0,
-    "projects": 1.0,
+    "projects": 0.85,
     "education": 0.95,
     "certifications": 0.95,
-    "skills": 0.75,
-    "summary": 0.6,
+    "skills": 0.85,
+    "summary": 0.65,
     "other": 0.25,
 }
 
