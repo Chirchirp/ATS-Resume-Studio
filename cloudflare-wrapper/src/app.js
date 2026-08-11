@@ -14,6 +14,7 @@ const WAKE_ATTEMPT_KEY = "atsStudioWakeAttempt";
 const STATUS_ENDPOINT = "/api/streamlit-status";
 const POLL_INTERVAL_MS = 5000;
 const STATUS_TIMEOUT_MS = 12000;
+const FRAME_REVEAL_FALLBACK_MS = 6500;
 
 const progressMessages = [
   "Preparing your workspace…",
@@ -31,6 +32,10 @@ function showConfigurationError(message) {
 
 function buildEmbedUrl(value) {
   const url = new URL(value);
+  // Once readiness is confirmed, embed Streamlit's actual runtime directly.
+  // Embedding the public root adds another cross-origin hosting iframe whose
+  // load event is not reliable across browsers after a Community Cloud wake.
+  url.pathname = `${url.pathname.replace(/\/+$/, "")}/~/+/`;
   url.searchParams.set("embed", "true");
   url.searchParams.append("embed_options", "hide_loading_screen");
   return url.toString();
@@ -102,6 +107,7 @@ function startStudio() {
   let revealed = false;
   let frameStarted = false;
   let pollTimer;
+  let frameFallbackTimer;
   let checking = false;
 
   const revealStudio = () => {
@@ -110,6 +116,7 @@ function startStudio() {
     }
     revealed = true;
     window.clearInterval(progressTimer);
+    window.clearTimeout(frameFallbackTimer);
     stage.dataset.state = "ready";
     document.querySelector(".wake-screen").setAttribute("aria-hidden", "true");
   };
@@ -124,10 +131,19 @@ function startStudio() {
       "Streamlit is awake. Opening your workspace…",
       "The application is awake and reconnecting."
     );
-    frame.addEventListener("load", () => window.setTimeout(revealStudio, 900), {
-      once: true,
-    });
+    frame.addEventListener(
+      "load",
+      () => window.setTimeout(revealStudio, 450),
+      { once: true }
+    );
     setFrameSource(publicUrl.toString(), reason);
+    frameFallbackTimer = window.setTimeout(() => {
+      if (!revealed) {
+        helperMessage.textContent =
+          "Streamlit confirmed the runtime is ready. Displaying it now.";
+        revealStudio();
+      }
+    }, FRAME_REVEAL_FALLBACK_MS);
   };
 
   const scheduleCheck = (delay = POLL_INTERVAL_MS) => {
@@ -207,6 +223,8 @@ function startStudio() {
   });
 
   window.addEventListener("focus", () => void checkReadiness());
+  window.addEventListener("pageshow", () => void checkReadiness());
+  window.addEventListener("online", () => void checkReadiness());
   void checkReadiness();
 }
 
