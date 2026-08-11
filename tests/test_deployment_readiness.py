@@ -78,6 +78,8 @@ def test_cloudflare_wrapper_has_recoverable_wake_flow_and_fresh_assets():
     assert 'type: "ats-session-request"' in browser_storage
     assert "restoreRequestId" in browser_storage
     assert "event.source !== window.parent" not in browser_storage
+    assert "parentElement.setAttribute" not in browser_storage
+    assert "parentElement.style" not in browser_storage
     assert 'type: "ats-session-save"' in browser_storage
     assert 'type: "ats-session-clear"' in browser_storage
     assert 'stage.dataset.state = "ready"' in script
