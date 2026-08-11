@@ -6,7 +6,7 @@ import streamlit as st
 
 
 _STORAGE_JS = r"""
-export default function({ data, setStateValue, parentElement }) {
+export default function({ data, setStateValue }) {
     const operation = data?.operation ?? "get";
     const storageKey = data?.storageKey ?? "";
     const suppliedValue = data?.value ?? "";
@@ -56,8 +56,6 @@ export default function({ data, setStateValue, parentElement }) {
         value = "";
     }
 
-    parentElement.setAttribute("aria-hidden", "true");
-    parentElement.style.display = "none";
     setStateValue("value", value);
     return () => window.removeEventListener("message", acceptParentRestore);
 }
