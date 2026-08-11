@@ -153,11 +153,15 @@ function startStudio() {
     if (type === "ats-session-request") {
       const token =
         window.localStorage.getItem(AUTH_BRIDGE_KEY) || fragmentSessionToken();
-      if (token && event.source && "postMessage" in event.source) {
-        event.source.postMessage(
-          { type: "ats-session-restore", token },
-          publicUrl.origin
-        );
+      if (token && event.source) {
+        try {
+          event.source.postMessage(
+            { type: "ats-session-restore", token },
+            publicUrl.origin
+          );
+        } catch {
+          // A detached Streamlit runtime will request again after reconnecting.
+        }
       }
     }
   });
