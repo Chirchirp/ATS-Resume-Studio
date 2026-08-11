@@ -1,6 +1,7 @@
 """Provider configuration, preferences, token controls, and session telemetry."""
 
 import streamlit as st
+import time
 
 from config.settings import (
     DEFAULT_PROVIDER,
@@ -21,6 +22,7 @@ from config.settings import (
 )
 from utils.ai_client import AIClientError, list_provider_models
 from utils.auth import DEFAULT_LOGIN_USERNAME, logout
+from utils.session_store import RECOVERABLE_KEYS, clear_saved_workspace
 
 
 def _provider_key_input(provider: str, prefix: str = ""):
@@ -86,9 +88,35 @@ def render_sidebar() -> dict:
             unsafe_allow_html=True,
         )
         st.caption(f"Signed in as {DEFAULT_LOGIN_USERNAME}")
+        saved_at = int(st.session_state.get("workspace_last_saved_at", 0) or 0)
+        if saved_at:
+            st.caption(
+                "🔒 Workspace recovery saved · "
+                + time.strftime("%d %b %H:%M", time.localtime(saved_at))
+            )
+        elif st.session_state.get("_workspace_restored"):
+            st.caption("🔒 Workspace restored in this browser")
+        else:
+            st.caption("🔒 Automatic encrypted workspace recovery is on")
         if st.button("↪ Sign out", width="stretch", key="auth_sign_out"):
             logout()
-            st.rerun()
+            st.stop()
+        with st.expander("Workspace recovery", expanded=False):
+            st.caption(
+                "Resume, JD, clarification answers, and generated documents are "
+                "recoverable after a tab disconnect. Provider API keys are excluded."
+            )
+            if st.button(
+                "Clear current and saved workspace",
+                width="stretch",
+                key="clear_recovery_workspace",
+            ):
+                clear_saved_workspace(st.session_state)
+                for state_key in RECOVERABLE_KEYS:
+                    st.session_state.pop(state_key, None)
+                st.session_state.pop("_workspace_restore_checked", None)
+                st.session_state.pop("_workspace_restored", None)
+                st.rerun()
         st.divider()
 
         st.markdown("#### 🤖 AI Provider")
@@ -383,8 +411,18 @@ def render_sidebar() -> dict:
                 )
 
         if st.button("🔄 Reset everything", width="stretch"):
+            clear_saved_workspace(st.session_state)
+            preserved = {
+                key: st.session_state[key]
+                for key in (
+                    "auth_authenticated",
+                    "auth_workspace_id",
+                )
+                if key in st.session_state
+            }
             for key in list(st.session_state.keys()):
                 st.session_state.pop(key, None)
+            st.session_state.update(preserved)
             st.rerun()
 
     return {

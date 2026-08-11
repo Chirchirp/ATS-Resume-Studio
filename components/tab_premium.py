@@ -49,6 +49,7 @@ from utils.evidence_engine import (
     validate_grounded_resume_draft,
 )
 from utils.logger import log_usage
+from utils.resume_strategy import build_keyword_xray, build_three_stage_audit
 from utils.text_processing import (
     clean_resume_output,
     finalize_cover_letter,
@@ -61,6 +62,85 @@ from utils.workspace_engine import build_positioning_strategies
 
 def _display_md(text: str, **kwargs):
     st.markdown(sanitize_display_text(text), **kwargs)
+
+
+def _short_signal(value: str, limit: int = 170) -> str:
+    clean = re.sub(r"\s+", " ", str(value)).strip()
+    return clean if len(clean) <= limit else clean[: limit - 1].rstrip() + "…"
+
+
+def _render_competitive_resume_audits(
+    jd_text: str,
+    resume_text: str,
+    validation,
+):
+    """Show deterministic keyword and human-reading gates beside truth checks."""
+    alignment = analyze_alignment(jd_text, resume_text)
+    original_text = st.session_state.get("resume", "")
+    original_alignment = (
+        analyze_alignment(jd_text, original_text)
+        if str(original_text).strip()
+        else None
+    )
+    xray = build_keyword_xray(alignment)
+    reading = build_three_stage_audit(
+        jd_text,
+        resume_text,
+        truth_validation=validation,
+    )
+    st.markdown("#### Recruiter-readiness control panel")
+    c1, c2, c3 = st.columns(3)
+    c1.metric(
+        "Job alignment",
+        f"{alignment.score}%",
+        delta=(
+            f"{alignment.score - original_alignment.score:+d} vs original"
+            if original_alignment
+            else None
+        ),
+    )
+    c2.metric("3-stage readability", f"{reading.overall_score}%")
+    c3.metric(
+        "Keyword evidence",
+        str(xray.supported_count),
+        delta=f"{xray.gap_count} honest gap(s)",
+        delta_color="inverse",
+    )
+    with st.expander("Keyword X-ray · preferred → required → technical", expanded=False):
+        st.caption(
+            "Only terms supported by candidate evidence are eligible for the resume. "
+            "Gaps stay visible instead of being manufactured into claims."
+        )
+        for bucket in xray.buckets:
+            st.markdown(f"**{bucket.label}**")
+            if bucket.supported:
+                st.markdown(
+                    "✅ Supported: "
+                    + " · ".join(_short_signal(value) for value in bucket.supported[:8])
+                )
+            else:
+                st.caption("No supported signal detected in this category.")
+            if bucket.gaps:
+                st.markdown(
+                    "⚠️ Evidence gap: "
+                    + " · ".join(_short_signal(value) for value in bucket.gaps[:8])
+                )
+        if xray.exact_phrases:
+            st.markdown(
+                "**Exact supported phrases:** "
+                + " · ".join(xray.exact_phrases[:12])
+            )
+    with st.expander("Three-stage recruiter gate · skim → scan → study", expanded=True):
+        stage_columns = st.columns(3)
+        for column, stage in zip(stage_columns, reading.stages):
+            with column:
+                st.metric(f"{stage.name} · {stage.timebox}", f"{stage.score}%")
+                st.caption("PASS" if stage.passed else "NEEDS WORK")
+                for strength in stage.strengths[:3]:
+                    st.markdown(f"✓ {strength}")
+                for fix in stage.fixes[:3]:
+                    st.markdown(f"→ {fix}")
+    return alignment, xray, reading
 
 
 def _call_ai(
@@ -1320,6 +1400,17 @@ def _render_resume_gen(prefs: dict):
                         "automatically. A remaining metric, skill, credential, education, "
                         "or date issue means the wording is not present in your source resume."
                     )
+
+        competitive_alignment, keyword_xray, reading_audit = (
+            _render_competitive_resume_audits(
+                st.session_state.get("jd", ""),
+                rout.get("resume", ""),
+                validation,
+            )
+        )
+        rout["competitive_alignment"] = competitive_alignment
+        rout["keyword_xray"] = keyword_xray
+        rout["three_stage_audit"] = reading_audit
 
         tabs = st.tabs(
             ["📄 Resume Preview", "💡 Achievement Examples", "🛡️ Truth Audit & Edit"]

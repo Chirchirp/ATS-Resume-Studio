@@ -169,6 +169,8 @@ Application code never writes keys to disk.
 | 📈 Outcome Tracking | Associate application progress with the resume version used |
 | 🌐 Universal Domains | Career-specific guidance with an enhanced Data Analytics profile and neutral fallback |
 | 🩺 Resume Quality Review | Resume-first structure, grammar, chronology, possible gap, and ATS-readability feedback before any JD comparison |
+| 🔎 Three-Stage Recruiter Gate | Deterministic 2-second skim, 10-second scan, and full-study checks with a preferred → required → technical keyword X-ray |
+| 🔐 Workspace Recovery | Seven-day signed browser login plus encrypted recovery of resume/JD/generated work; provider keys are excluded |
 | 👤 Authenticated Profiles | Persistent user-owned profiles with password hashing and expiring signed sessions |
 | 🗂️ Application Workspaces | Server-side application records with strict ownership checks |
 | 🕰️ Document History | Immutable resume and job-description versions |
@@ -178,8 +180,9 @@ Application code never writes keys to disk.
 
 ## Data and privacy
 
-Streamlit session data is normally held in the application server process, not only
-in the browser. Resume and job-description text are sent to the selected provider
+Streamlit work is held in the active server session and a bounded encrypted recovery
+snapshot keyed to the signed browser workspace. Provider API keys are never written
+to that snapshot. Resume and job-description text are sent to the selected provider
 when an AI feature is used. The local `usage_logs.csv` contains action metadata, not resume or job-
 description content. Review the retention and privacy settings of your hosting
 environment and model provider before processing sensitive personal information.

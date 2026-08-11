@@ -325,9 +325,11 @@ def make_docx_from_text(text: str, name: str = "") -> bytes:
             i += 1
             continue
 
-        # Skill category line (no bullets)
+        # Skill category line. A leading marker becomes a real Word bullet below;
+        # legacy unbulleted inputs still receive category emphasis here.
         if (
             ("–" in line or "—" in line or (":" in line and len(line.split(":")[0].split()) <= 6))
+            and not BULLET_PREFIX_RE.match(line)
             and not line.startswith("[")
             and "|" not in line
         ):
@@ -353,7 +355,7 @@ def make_docx_from_text(text: str, name: str = "") -> bytes:
             continue
 
         # Bullet point
-        if not in_core_skills and BULLET_PREFIX_RE.match(line):
+        if BULLET_PREFIX_RE.match(line):
             bullet_text = BULLET_PREFIX_RE.sub("", line, count=1).strip()
             p = doc.add_paragraph(style="List Bullet")
             _apply_resume_bullet_numbering(p, bullet_num_id)

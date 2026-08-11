@@ -21,6 +21,7 @@ public deployment to use:
 GROQ_API_KEY = ""
 GEMINI_API_KEY = ""
 OPENROUTER_API_KEY = ""
+APP_SESSION_SECRET = "replace-with-at-least-32-random-characters"
 ```
 
 Do not commit `.streamlit/secrets.toml`. It is ignored by Git. If no shared key is
@@ -31,12 +32,20 @@ sidebar for their current Streamlit session.
 
 The Streamlit entry point is protected by the shared **Modern Resume AI Agent**
 account. Only a PBKDF2 password verifier is committed; the plaintext password is
-not stored in the repository. Authentication lasts for the active Streamlit
-session, and signing out clears sensitive session state.
+not stored in the repository. A signed browser token keeps the account open for
+seven days and the Cloudflare shell relays that opaque token when an embedded
+Streamlit session reconnects. The token contains no password or provider key.
+
+The app also keeps a small encrypted recovery snapshot for each signed browser
+workspace. It includes the resume, JD, clarification answers, and useful generated
+documents, but explicitly excludes API keys and credentials. **Sign out** removes
+the browser token; **Clear current and saved workspace** removes the snapshot.
 
 The optional `APP_LOGIN_USERNAME`, `APP_LOGIN_PASSWORD_SALT`, and
 `APP_LOGIN_PASSWORD_HASH` secrets can replace the shared credential later
-without a code change. Leave them blank to retain the built-in account.
+without a code change. Set `APP_SESSION_SECRET` to a stable random value of at
+least 32 characters so signed sessions survive application redeployments. Leave
+the login overrides blank to retain the built-in account.
 
 ## Deploy
 
@@ -68,7 +77,9 @@ without a code change. Leave them blank to retain the built-in account.
 
 - The Streamlit process may sleep after inactivity; the wrapper cannot prevent
   that on the free tier.
-- Session state and `usage_logs.csv` are ephemeral and can be lost on restart.
+- Live Session State and `usage_logs.csv` are ephemeral. The encrypted workspace
+  snapshot recovers ordinary browser disconnects and app sleeps, but Community
+  Cloud's local disk can still be replaced during a redeploy or infrastructure restart.
 - The separate FastAPI platform is not started by `streamlit run app.py` and
   requires a different host if persistent accounts and background jobs are
   exposed later.

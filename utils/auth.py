@@ -1,8 +1,8 @@
 """Shared-account authentication for the Streamlit studio.
 
 The repository contains a slow password verifier, never the plaintext password.
-Authentication is intentionally session-scoped because Streamlit Community Cloud
-does not provide durable user sessions on its free tier.
+A signed browser token restores authentication after Streamlit replaces its
+WebSocket session; the token contains no password or provider credential.
 """
 
 from __future__ import annotations
@@ -11,8 +11,13 @@ import hashlib
 import hmac
 import os
 import time
+import uuid
 
 import streamlit as st
+
+from platform_api.security import TokenSigner
+from utils.browser_storage import browser_storage
+from utils.session_store import session_secret
 
 
 DEFAULT_LOGIN_USERNAME = "Modern Resume AI Agent"
@@ -23,6 +28,8 @@ DEFAULT_PASSWORD_HASH = (
 PASSWORD_ITERATIONS = 600_000
 MAX_FAILED_ATTEMPTS = 5
 LOCKOUT_SECONDS = 60
+AUTH_STORAGE_KEY = "ats_resume_studio_session"
+AUTH_SESSION_TTL_SECONDS = 7 * 24 * 60 * 60
 
 
 def _setting(name: str, fallback: str) -> str:
@@ -67,6 +74,62 @@ def credentials_are_valid(username: str, password: str) -> bool:
         salt=expected_salt,
         expected_hash=expected_hash,
     )
+
+
+def _token_signer() -> TokenSigner:
+    return TokenSigner(session_secret(), ttl_seconds=AUTH_SESSION_TTL_SECONDS)
+
+
+def issue_persistent_login(workspace_id: str | None = None) -> tuple[str, str]:
+    """Issue a signed token and its opaque per-browser workspace identifier."""
+    workspace_id = workspace_id or uuid.uuid4().hex
+    token = _token_signer().issue(workspace_id, DEFAULT_LOGIN_USERNAME)
+    return token, workspace_id
+
+
+def verify_persistent_login(token: str) -> str | None:
+    """Return the signed workspace ID or ``None`` for an invalid/expired token."""
+    try:
+        claims = _token_signer().verify(token)
+    except ValueError:
+        return None
+    if not hmac.compare_digest(claims.email, DEFAULT_LOGIN_USERNAME):
+        return None
+    return claims.user_id
+
+
+def _restore_browser_login() -> bool:
+    try:
+        token = browser_storage(
+            "get",
+            AUTH_STORAGE_KEY,
+            key="auth_browser_token_reader",
+        )
+    except Exception:
+        return False
+    workspace_id = verify_persistent_login(str(token or ""))
+    if not workspace_id:
+        return False
+    st.session_state["auth_authenticated"] = True
+    st.session_state["auth_workspace_id"] = workspace_id
+    st.session_state["auth_restored_from_browser"] = True
+    return True
+
+
+def _remember_login() -> None:
+    token, workspace_id = issue_persistent_login()
+    st.session_state["auth_workspace_id"] = workspace_id
+    try:
+        browser_storage(
+            "set",
+            AUTH_STORAGE_KEY,
+            token,
+            key="auth_browser_token_writer",
+        )
+    except Exception:
+        # The current Streamlit session still remains authenticated. The login
+        # form can be used again if a browser blocks all embedded storage.
+        st.session_state["auth_storage_warning"] = True
 
 
 def _render_login_styles() -> None:
@@ -254,6 +317,9 @@ def _render_login_styles() -> None:
 def render_login_gate() -> bool:
     """Render the login screen and return whether the session is authenticated."""
     if st.session_state.get("auth_authenticated", False):
+        st.session_state.pop("auth_login_pending", None)
+        return True
+    if _restore_browser_login():
         return True
 
     _render_login_styles()
@@ -326,7 +392,8 @@ def render_login_gate() -> bool:
                 st.session_state["auth_authenticated"] = True
                 st.session_state["auth_failed_attempts"] = 0
                 st.session_state["auth_lockout_until"] = 0.0
-                st.rerun()
+                _remember_login()
+                st.session_state["auth_login_pending"] = True
             else:
                 failed_attempts = int(
                     st.session_state.get("auth_failed_attempts", 0)
@@ -350,15 +417,28 @@ def render_login_gate() -> bool:
                     )
 
         st.markdown(
-            '<p class="login-security-note">Protected access · Session-scoped sign-in</p>',
+            '<p class="login-security-note">Protected access · Stay signed in for 7 days</p>',
             unsafe_allow_html=True,
         )
 
-    return False
+    # The storage component triggers the next rerun after it commits the token.
+    # Until then, keep document content behind the login gate.
+    return bool(
+        st.session_state.get("auth_authenticated")
+        and not st.session_state.get("auth_login_pending")
+    )
 
 
 def logout() -> None:
     """Clear sensitive session values and return to the login screen."""
+    try:
+        browser_storage(
+            "remove",
+            AUTH_STORAGE_KEY,
+            key="auth_browser_token_remover",
+        )
+    except Exception:
+        pass
     for key in list(st.session_state.keys()):
         st.session_state.pop(key, None)
     st.session_state["auth_authenticated"] = False

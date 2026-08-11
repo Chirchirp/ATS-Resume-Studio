@@ -3,7 +3,9 @@ import hashlib
 from utils.auth import (
     DEFAULT_LOGIN_USERNAME,
     PASSWORD_ITERATIONS,
+    issue_persistent_login,
     password_matches,
+    verify_persistent_login,
 )
 
 
@@ -30,3 +32,10 @@ def test_password_verifier_accepts_only_matching_digest():
         salt=test_salt,
         expected_hash=expected,
     )
+
+
+def test_persistent_login_token_is_signed_and_workspace_scoped():
+    token, workspace_id = issue_persistent_login("browser-workspace-123")
+    assert workspace_id == "browser-workspace-123"
+    assert verify_persistent_login(token) == workspace_id
+    assert verify_persistent_login(token + "tampered") is None
