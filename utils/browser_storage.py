@@ -10,11 +10,16 @@ export default function({ data, setStateValue, parentElement }) {
     const operation = data?.operation ?? "get";
     const storageKey = data?.storageKey ?? "";
     const suppliedValue = data?.value ?? "";
+    const restoreRequestId = globalThis.crypto?.randomUUID?.() ??
+        `${Date.now()}-${Math.random().toString(36).slice(2)}`;
     let value = "";
 
     const acceptParentRestore = (event) => {
-        if (event.source !== window.parent) return;
         if (event.data?.type !== "ats-session-restore") return;
+        // Streamlit can nest this component below its runtime iframe. Match the
+        // one-time request nonce instead of assuming the Cloudflare shell is
+        // this window's immediate parent.
+        if (event.data?.requestId !== restoreRequestId) return;
         const restored = String(event.data?.token ?? "");
         if (!restored) return;
         try { window.localStorage.setItem(storageKey, restored); } catch (_error) {}
@@ -41,7 +46,10 @@ export default function({ data, setStateValue, parentElement }) {
         } else if (storageKey) {
             value = window.localStorage.getItem(storageKey) ?? "";
             if (!value && window.parent !== window) {
-                window.parent.postMessage({ type: "ats-session-request" }, "*");
+                window.parent.postMessage(
+                    { type: "ats-session-request", requestId: restoreRequestId },
+                    "*"
+                );
             }
         }
     } catch (_error) {

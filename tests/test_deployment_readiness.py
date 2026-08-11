@@ -72,9 +72,12 @@ def test_cloudflare_wrapper_has_recoverable_wake_flow_and_fresh_assets():
     assert "event.source.postMessage" in script
     assert '"postMessage" in event.source' not in script
     assert 'type === "ats-session-request"' in script
+    assert "requestId" in script
     assert 'type === "ats-session-save"' in script
     assert 'type === "ats-session-clear"' in script
     assert 'type: "ats-session-request"' in browser_storage
+    assert "restoreRequestId" in browser_storage
+    assert "event.source !== window.parent" not in browser_storage
     assert 'type: "ats-session-save"' in browser_storage
     assert 'type: "ats-session-clear"' in browser_storage
     assert 'stage.dataset.state = "ready"' in script
@@ -89,8 +92,8 @@ def test_cloudflare_wrapper_has_recoverable_wake_flow_and_fresh_assets():
     assert 'pathname === "/styles.css"' in worker
     assert "max-age=604800, immutable" not in worker
     assert "max-age=604800, immutable" not in headers
-    assert 'href="./styles.css?v=20260811-nested-session-bridge"' in markup
-    assert 'src="./app.js?v=20260811-nested-session-bridge"' in markup
+    assert 'href="./styles.css?v=20260811-session-nonce-bridge"' in markup
+    assert 'src="./app.js?v=20260811-session-nonce-bridge"' in markup
 
 
 def test_cloudflare_wrapper_requires_runtime_streamlit_url():

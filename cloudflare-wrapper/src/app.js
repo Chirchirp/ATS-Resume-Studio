@@ -151,12 +151,16 @@ function startStudio() {
       return;
     }
     if (type === "ats-session-request") {
+      const requestId = String(event.data?.requestId || "");
+      if (!requestId || requestId.length > 200) {
+        return;
+      }
       const token =
         window.localStorage.getItem(AUTH_BRIDGE_KEY) || fragmentSessionToken();
       if (token && event.source) {
         try {
           event.source.postMessage(
-            { type: "ats-session-restore", token },
+            { type: "ats-session-restore", token, requestId },
             publicUrl.origin
           );
         } catch {
