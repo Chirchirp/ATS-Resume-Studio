@@ -55,3 +55,16 @@ def test_encrypted_workspace_roundtrip_and_clear(tmp_path: Path):
     }
     assert not restore_workspace(fresh, store)
 
+
+def test_browser_grant_is_scoped_expires_and_can_be_revoked(tmp_path: Path):
+    store = WorkspaceStore(tmp_path / "recovery.db", "x" * 64)
+    store.save_browser_grant("fingerprint-a", "workspace-a", expires_at=200)
+    store.save_browser_grant("fingerprint-b", "workspace-b", expires_at=300)
+
+    assert store.load_browser_grant("fingerprint-a", now=100) == "workspace-a"
+    assert store.load_browser_grant("fingerprint-b", now=100) == "workspace-b"
+    assert store.load_browser_grant("fingerprint-a", now=201) is None
+    assert store.load_browser_grant("fingerprint-b", now=201) == "workspace-b"
+
+    store.revoke_browser_grant("fingerprint-b")
+    assert store.load_browser_grant("fingerprint-b", now=201) is None

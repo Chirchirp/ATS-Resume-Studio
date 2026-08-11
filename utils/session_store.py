@@ -183,6 +183,15 @@ class WorkspaceStore:
                 )
                 """
             )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS browser_grants (
+                    browser_fingerprint TEXT PRIMARY KEY,
+                    workspace_id TEXT NOT NULL,
+                    expires_at INTEGER NOT NULL
+                )
+                """
+            )
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.db_path, timeout=5)
@@ -221,6 +230,58 @@ class WorkspaceStore:
             connection.execute(
                 "DELETE FROM workspace_snapshots WHERE workspace_id = ?",
                 (workspace_id,),
+            )
+
+    def save_browser_grant(
+        self,
+        browser_fingerprint: str,
+        workspace_id: str,
+        expires_at: int,
+    ) -> None:
+        if not browser_fingerprint or not workspace_id:
+            return
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO browser_grants(browser_fingerprint, workspace_id, expires_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(browser_fingerprint) DO UPDATE SET
+                    workspace_id=excluded.workspace_id,
+                    expires_at=excluded.expires_at
+                """,
+                (browser_fingerprint, workspace_id, int(expires_at)),
+            )
+
+    def load_browser_grant(
+        self,
+        browser_fingerprint: str,
+        *,
+        now: int | None = None,
+    ) -> str | None:
+        if not browser_fingerprint:
+            return None
+        current = int(time.time()) if now is None else int(now)
+        with self._connect() as connection:
+            connection.execute(
+                "DELETE FROM browser_grants WHERE expires_at < ?",
+                (current,),
+            )
+            row = connection.execute(
+                """
+                SELECT workspace_id FROM browser_grants
+                WHERE browser_fingerprint = ? AND expires_at >= ?
+                """,
+                (browser_fingerprint, current),
+            ).fetchone()
+        return str(row[0]) if row else None
+
+    def revoke_browser_grant(self, browser_fingerprint: str) -> None:
+        if not browser_fingerprint:
+            return
+        with self._connect() as connection:
+            connection.execute(
+                "DELETE FROM browser_grants WHERE browser_fingerprint = ?",
+                (browser_fingerprint,),
             )
 
 
