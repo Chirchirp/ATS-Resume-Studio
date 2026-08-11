@@ -15,6 +15,7 @@ const STATUS_ENDPOINT = "/api/streamlit-status";
 const POLL_INTERVAL_MS = 5000;
 const STATUS_TIMEOUT_MS = 12000;
 const FRAME_REVEAL_FALLBACK_MS = 6500;
+const AUTH_BRIDGE_KEY = "atsResumeStudioSignedSession";
 
 const progressMessages = [
   "Preparing your workspace…",
@@ -93,6 +94,36 @@ function startStudio() {
   helperDirectLink.addEventListener("click", recordWakeAttempt);
   dismissHelper.addEventListener("click", () => {
     wakeHelper.dataset.dismissed = "true";
+  });
+
+  // The Streamlit runtime is cross-origin. Keep only its signed, opaque session
+  // token in the first-party Cloudflare shell so iframe reconnects can restore
+  // authentication without storing a password or provider API key.
+  window.addEventListener("message", (event) => {
+    if (event.source !== frame.contentWindow || event.origin !== publicUrl.origin) {
+      return;
+    }
+    const type = event.data?.type;
+    if (type === "ats-session-save") {
+      const token = String(event.data?.token || "");
+      if (token && token.length <= 5000) {
+        window.localStorage.setItem(AUTH_BRIDGE_KEY, token);
+      }
+      return;
+    }
+    if (type === "ats-session-clear") {
+      window.localStorage.removeItem(AUTH_BRIDGE_KEY);
+      return;
+    }
+    if (type === "ats-session-request") {
+      const token = window.localStorage.getItem(AUTH_BRIDGE_KEY) || "";
+      if (token) {
+        frame.contentWindow?.postMessage(
+          { type: "ats-session-restore", token },
+          publicUrl.origin
+        );
+      }
+    }
   });
 
   let messageIndex = 0;

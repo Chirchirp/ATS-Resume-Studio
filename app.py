@@ -19,6 +19,7 @@ Folder structure:
         text_processing.py   PDF extraction, keyword match, sanitize
 """
 
+import copy
 import sys
 import os
 
@@ -34,6 +35,7 @@ from components.tab_premium import render_tab_premium
 from components.tab_workspace import render_tab_workspace
 from utils.auth import render_login_gate
 from utils.logger import init_log_file
+from utils.session_store import restore_workspace, save_workspace
 
 # ──────────────────────────────────────────────────────────────
 # Page config (must be first Streamlit call)
@@ -443,6 +445,10 @@ st.markdown(
 if not render_login_gate():
     st.stop()
 
+# A signed browser workspace ID lets a replacement Streamlit session recover the
+# user's authored inputs and generated documents. Provider API keys are excluded.
+restore_workspace(st.session_state)
+
 # ──────────────────────────────────────────────────────────────
 # Session state defaults
 # ──────────────────────────────────────────────────────────────
@@ -484,7 +490,7 @@ DEFAULTS = {
 
 for k, v in DEFAULTS.items():
     if k not in st.session_state:
-        st.session_state[k] = v
+        st.session_state[k] = copy.deepcopy(v)
 
 # ──────────────────────────────────────────────────────────────
 # Init log file
@@ -621,7 +627,9 @@ with tab_help:
 
         ### Privacy Note
         Your resume and job description are held in the app's server-side Streamlit session and
-        are sent to your **selected AI provider** when you use an AI feature. Basic action metadata is written to
+        in an encrypted recovery snapshot for this signed browser workspace. API keys are never
+        written to the recovery snapshot. Your content is sent to your **selected AI provider**
+        when you use an AI feature. Basic action metadata is written to
         a local usage log; resume and job-description text are not included in that log.
         Review your hosting setup and each provider's data terms before processing sensitive information.
         """
@@ -640,3 +648,12 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
+
+# Save only when recoverable content changed, avoiding a database write on every
+# Streamlit rerun while still capturing ordinary text edits and generated outputs.
+try:
+    save_workspace(st.session_state)
+except (OSError, ValueError):
+    # Recovery must never interrupt resume work. The sidebar will continue to show
+    # the last successful save time when storage is temporarily unavailable.
+    pass

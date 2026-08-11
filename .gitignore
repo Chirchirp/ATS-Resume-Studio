@@ -10,6 +10,7 @@ dist/
 !.env.example
 usage_logs.csv
 data/
+.runtime/
 *.db
 *.db-shm
 *.db-wal

@@ -73,6 +73,13 @@ class GroundingAndDocumentTests(unittest.TestCase):
         self.assertIn("natural professional voice", lowered)
         self.assertIn("do not repeat the same lead verb", lowered)
         self.assertIn("deterministic role bullet plan", lowered)
+        self.assertIn("three recruiter reading passes", lowered)
+        self.assertIn("f-pattern", lowered)
+        self.assertIn("supported preferred qualifications", lowered)
+        self.assertIn("strongest 10%", lowered)
+        self.assertIn("results + metric + context", lowered)
+        self.assertIn("demonstrate soft skills through observable scope", lowered)
+        self.assertIn("consistent professional identity", lowered)
         self.assertIn("never exceed four pages", lowered)
         self.assertNotIn("reasonable to infer", lowered)
         self.assertNotIn("quantify everything", lowered)
@@ -147,6 +154,26 @@ class GroundingAndDocumentTests(unittest.TestCase):
         text = "\n".join(paragraph.text for paragraph in document.paragraphs)
         self.assertIn("Jane Doe", text)
         self.assertNotIn("Data Analyst", text)
+
+    def test_docx_renders_core_skill_categories_as_real_word_bullets(self):
+        payload = make_docx_from_text(
+            "Jane Doe\njane@example.com\n\nCORE SKILLS\n"
+            "- Analytics Tools: SQL | Power BI\n"
+            "- Delivery: Stakeholder Management | Reporting\n\n"
+            "PROFESSIONAL EXPERIENCE\n"
+            "Data Analyst | Acme | 2022 - Present\n"
+            "- Built SQL dashboards for operations.",
+            name="Jane Doe",
+        )
+        document = Document(io.BytesIO(payload))
+        skill_paragraphs = [
+            paragraph
+            for paragraph in document.paragraphs
+            if paragraph.text.startswith(("Analytics Tools:", "Delivery:"))
+        ]
+        self.assertEqual(len(skill_paragraphs), 2)
+        for paragraph in skill_paragraphs:
+            self.assertIsNotNone(paragraph._p.pPr.numPr)
 
     def test_docx_roundtrip_preserves_ats_readable_resume_structure(self):
         source = """\

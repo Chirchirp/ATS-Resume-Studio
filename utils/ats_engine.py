@@ -1173,7 +1173,9 @@ def analyze_alignment(jd_text: str, resume_text: str) -> AlignmentReport:
 
 def top_requirement_text(job: JobProfile, limit: int = 10) -> list[str]:
     """Return prioritized requirement text for grounded prompt context."""
-    combined = job.required + job.preferred
+    # Human editorial order: differentiating preferred qualifications first,
+    # then non-negotiable requirements. Scoring weights remain unchanged.
+    combined = job.preferred + job.required
     seen: set[str] = set()
     result: list[str] = []
     for requirement in combined:

@@ -1051,6 +1051,31 @@ def _normalized_fact_line(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", " ", text.lower()).strip()
 
 
+def _audited_bullet_positions(lines: list[str]) -> list[int]:
+    """Return contribution bullets, excluding scan-friendly skill bullets.
+
+    Standalone achievement text has no section headings, so all substantive
+    bullets remain auditable. Full resumes restrict claim citations to
+    experience and project sections.
+    """
+    current_section = ""
+    target_headings_seen = False
+    target_positions: list[int] = []
+    all_positions: list[int] = []
+    for index, line in enumerate(lines):
+        detected = _section_heading(line.strip())
+        if detected:
+            current_section = detected
+            if detected in {"experience", "projects"}:
+                target_headings_seen = True
+            continue
+        if BULLET_RE.match(line) and len(_clean_evidence_line(line).split()) >= 4:
+            all_positions.append(index)
+            if current_section in {"experience", "projects"}:
+                target_positions.append(index)
+    return target_positions if target_headings_seen else all_positions
+
+
 def validate_generated_claims(
     generated_text: str,
     ledger: EvidenceLedger,
@@ -1064,11 +1089,9 @@ def validate_generated_claims(
     unsupported_job_skills = jd_skills - source_skills
     source_lower = source_text.lower()
 
-    claims = [
-        _clean_evidence_line(line)
-        for line in generated_text.splitlines()
-        if BULLET_RE.match(line) and len(_clean_evidence_line(line).split()) >= 4
-    ]
+    lines = generated_text.splitlines()
+    claim_positions = _audited_bullet_positions(lines)
+    claims = [_clean_evidence_line(lines[index]) for index in claim_positions]
     if not claims:
         claims = [
             sentence.strip()
@@ -1139,11 +1162,7 @@ def validate_achievement_claims(
     report = validate_generated_claims(generated_text, ledger, jd_text)
     evidence_by_id = ledger.by_id()
     lines = generated_text.splitlines()
-    bullet_positions = [
-        index
-        for index, line in enumerate(lines)
-        if BULLET_RE.match(line) and len(_clean_evidence_line(line).split()) >= 4
-    ]
+    bullet_positions = _audited_bullet_positions(lines)
 
     for claim_index, position in enumerate(bullet_positions, start=1):
         claim_id = f"C{claim_index:03d}"
@@ -1466,6 +1485,7 @@ def _canonicalize_bullet_blocks(
     lines = generated_text.splitlines()
     output: list[str] = []
     current_role_id = ""
+    current_section = ""
     source_headers = {
         _normalized_fact_line(role.header): role.id
         for role in (ledger.profile.roles if ledger.profile else ())
@@ -1474,10 +1494,17 @@ def _canonicalize_bullet_blocks(
     while index < len(lines):
         raw = lines[index]
         clean = raw.strip()
+        detected_section = _section_heading(clean)
+        if detected_section:
+            current_section = detected_section
         normalized = _normalized_fact_line(clean)
         if normalized in source_headers:
             current_role_id = source_headers[normalized]
-        if not BULLET_RE.match(raw) or len(_clean_evidence_line(raw).split()) < 4:
+        if (
+            current_section not in {"experience", "projects"}
+            or not BULLET_RE.match(raw)
+            or len(_clean_evidence_line(raw).split()) < 4
+        ):
             if not clean.lower().startswith(("evidence:", "status:", "jd match:")):
                 output.append(raw)
             index += 1
@@ -1630,6 +1657,7 @@ def _replace_experience_section(
             )
         source_items.sort(
             key=lambda item: (
+                0 if item.metrics else 1,
                 _requirement_for_evidence(item.id, matrix) is None,
                 item.item_type != "bullet",
                 item.source_line,
@@ -1740,33 +1768,6 @@ _SKILL_GROUPS = (
     ),
 )
 
-_VERB_TO_GERUND = {
-    "achieved": "achieving",
-    "analysed": "analysing",
-    "analyzed": "analyzing",
-    "automated": "automating",
-    "built": "building",
-    "collaborated": "collaborating",
-    "created": "creating",
-    "delivered": "delivering",
-    "designed": "designing",
-    "developed": "developing",
-    "documented": "documenting",
-    "drove": "driving",
-    "implemented": "implementing",
-    "improved": "improving",
-    "led": "leading",
-    "managed": "managing",
-    "optimized": "optimizing",
-    "prepared": "preparing",
-    "reduced": "reducing",
-    "streamlined": "streamlining",
-    "supported": "supporting",
-    "trained": "training",
-    "validated": "validating",
-}
-
-
 def _display_skill(value: str) -> str:
     """Format a source-backed skill without turning it into a new claim."""
     acronyms = {
@@ -1822,7 +1823,7 @@ def _source_backed_skill_lines(ledger: EvidenceLedger) -> list[str]:
                 values.append(display)
                 used.add(key)
         if values:
-            lines.append(f"{label}: " + " | ".join(values[:12]))
+            lines.append(f"- {label}: " + " | ".join(values[:12]))
 
     source_known_skills = _known_skills(source_text)
     capabilities = []
@@ -1840,7 +1841,7 @@ def _source_backed_skill_lines(ledger: EvidenceLedger) -> list[str]:
     capabilities = list(dict.fromkeys(capabilities))
     if capabilities:
         lines.append(
-            "Demonstrated Capabilities: " + " | ".join(capabilities[:12])
+            "- Demonstrated Capabilities: " + " | ".join(capabilities[:12])
         )
 
     remaining = []
@@ -1851,25 +1852,14 @@ def _source_backed_skill_lines(ledger: EvidenceLedger) -> list[str]:
             remaining.append(display)
             used.add(key)
     if remaining:
-        lines.append("Domain & Professional: " + " | ".join(remaining[:12]))
+        lines.append("- Domain & Professional: " + " | ".join(remaining[:12]))
     return lines
 
 
 def _evidence_summary_sentence(text: str) -> str:
-    """Turn a source action into restrained first-person-implicit resume prose."""
+    """Retain a concrete source action without generator scaffolding."""
     clean = _clean_evidence_line(text).rstrip(".")
-    match = re.match(r"^([A-Za-z]+)\b(.*)$", clean)
-    if not match:
-        return clean.rstrip(".") + "." if clean else ""
-    lead = match.group(1).lower()
-    if lead in _VERB_TO_GERUND:
-        return (
-            "Demonstrated experience includes "
-            + _VERB_TO_GERUND[lead]
-            + match.group(2).rstrip(".")
-            + "."
-        )
-    return clean.rstrip(".") + "."
+    return clean + "." if clean else ""
 
 
 def _premium_summary_lines(ledger: EvidenceLedger) -> list[str]:
@@ -1889,13 +1879,11 @@ def _premium_summary_lines(ledger: EvidenceLedger) -> list[str]:
         )
         if titles:
             if len(titles) == 1:
-                sentences.append(
-                    f"{titles[0]} with experience grounded in a documented work history."
-                )
+                sentences.append(f"{titles[0]} with a documented record of delivery.")
             else:
                 sentences.append(
-                    f"{titles[0]} with a career background spanning "
-                    + ", ".join(titles[1:3])
+                    f"{titles[0]} with prior experience as "
+                    + " and ".join(titles[1:3])
                     + "."
                 )
 
@@ -1936,6 +1924,60 @@ def _premium_summary_lines(ledger: EvidenceLedger) -> list[str]:
             )
             sentences.append(f"Works across {joined}.")
     return sentences[:4]
+
+
+def _grounded_model_summary(summary_text: str, ledger: EvidenceLedger) -> bool:
+    """Allow a strong model narrative only when its content stays source-close."""
+    sentences = [
+        value.strip()
+        for value in re.split(r"(?<=[.!?])\s+", summary_text)
+        if value.strip()
+    ]
+    if len(sentences) < 3 or len(summary_text.split()) < 45:
+        return False
+    source_terms = _content_terms(_ledger_source_text(ledger))
+    for sentence in sentences:
+        terms = _content_terms(sentence)
+        if not terms:
+            continue
+        overlap = terms.intersection(source_terms)
+        if len(overlap) < 2 or len(overlap) / len(terms) < 0.45:
+            return False
+    return True
+
+
+def _grounded_model_skill_lines(
+    lines: list[str],
+    ledger: EvidenceLedger,
+) -> list[str]:
+    """Keep richer model grouping only when each listed competency is grounded."""
+    candidates = [line.strip() for line in lines if line.strip()]
+    if not 3 <= len(candidates) <= 5:
+        return []
+    source_fact_text = _normalized_fact_line(_ledger_source_text(ledger))
+    source_terms = _content_terms(_ledger_source_text(ledger))
+    accepted: list[str] = []
+    for line in candidates:
+        clean = BULLET_RE.sub("", line, count=1).strip()
+        if ":" not in clean:
+            return []
+        _, values = clean.split(":", 1)
+        skills = [
+            value.strip()
+            for value in re.split(r"\s*(?:\||;|,)\s*", values)
+            if value.strip()
+        ]
+        if not skills:
+            return []
+        for skill in skills:
+            normalized = _normalized_fact_line(skill)
+            terms = _content_terms(skill)
+            if normalized and normalized in source_fact_text:
+                continue
+            if not terms or len(terms.intersection(source_terms)) / len(terms) < 0.75:
+                return []
+        accepted.append("- " + clean)
+    return accepted
 
 
 def _sectioned_resume(text: str) -> tuple[list[str], dict[str, list[str]], list[str]]:
@@ -2001,19 +2043,25 @@ def enhance_resume_core_sections(
         )
     )
     premium_summary = _premium_summary_lines(ledger)
-    if premium_summary:
-        # The summary is the app's most visible narrative. Keep it candidate-specific
-        # by rebuilding from source summary and exact role evidence on every pass.
-        sections["summary"] = premium_summary
-    elif (
+    if (
         sentence_count < min_sentences
         or len(summary_text.split()) < min_words
         or generic_opening
+        or not _grounded_model_summary(summary_text, ledger)
     ):
-        sections.pop("summary", None)
+        if premium_summary:
+            sections["summary"] = premium_summary
+        else:
+            sections.pop("summary", None)
 
     skill_lines = _source_backed_skill_lines(ledger)
-    if skill_lines:
+    model_skill_lines = _grounded_model_skill_lines(
+        sections.get("skills", []),
+        ledger,
+    )
+    if model_skill_lines:
+        sections["skills"] = model_skill_lines
+    elif skill_lines:
         sections["skills"] = skill_lines
     elif not profile.sections.get("skills", "").strip():
         sections.pop("skills", None)
@@ -2226,11 +2274,7 @@ def validate_grounded_resume_draft(
     matrix = build_evidence_matrix(jd_text, ledger)
     requirements_by_id = {row.id: row for row in matrix.rows}
     lines = generated_text.splitlines()
-    bullet_positions = [
-        index
-        for index, line in enumerate(lines)
-        if BULLET_RE.match(line) and len(_clean_evidence_line(line).split()) >= 4
-    ]
+    bullet_positions = _audited_bullet_positions(lines)
     for claim_index, position in enumerate(bullet_positions, start=1):
         claim_id = f"C{claim_index:03d}"
         claim = _clean_evidence_line(lines[position])

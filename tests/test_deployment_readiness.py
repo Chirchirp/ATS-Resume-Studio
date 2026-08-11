@@ -49,6 +49,9 @@ def test_cloudflare_wrapper_has_recoverable_wake_flow_and_fresh_assets():
     headers = (
         ROOT / "cloudflare-wrapper" / "src" / "_headers"
     ).read_text(encoding="utf-8")
+    browser_storage = (
+        ROOT / "utils" / "browser_storage.py"
+    ).read_text(encoding="utf-8")
 
     assert "visibilitychange" in script
     assert "atsStudioWakeAttempt" in script
@@ -61,6 +64,13 @@ def test_cloudflare_wrapper_has_recoverable_wake_flow_and_fresh_assets():
     assert "FRAME_REVEAL_FALLBACK_MS" in script
     assert 'window.addEventListener("pageshow"' in script
     assert 'window.addEventListener("online"' in script
+    assert "atsResumeStudioSignedSession" in script
+    assert 'type === "ats-session-request"' in script
+    assert 'type === "ats-session-save"' in script
+    assert 'type === "ats-session-clear"' in script
+    assert 'type: "ats-session-request"' in browser_storage
+    assert 'type: "ats-session-save"' in browser_storage
+    assert 'type: "ats-session-clear"' in browser_storage
     assert 'stage.dataset.state = "ready"' in script
     assert 'frame.addEventListener(\n      "load"' in script
     assert "setTimeout(revealStudio, 6500)" not in script
@@ -73,8 +83,8 @@ def test_cloudflare_wrapper_has_recoverable_wake_flow_and_fresh_assets():
     assert 'pathname === "/styles.css"' in worker
     assert "max-age=604800, immutable" not in worker
     assert "max-age=604800, immutable" not in headers
-    assert 'href="./styles.css?v=20260811-runtime-handoff"' in markup
-    assert 'src="./app.js?v=20260811-runtime-handoff"' in markup
+    assert 'href="./styles.css?v=20260811-session-bridge"' in markup
+    assert 'src="./app.js?v=20260811-session-bridge"' in markup
 
 
 def test_cloudflare_wrapper_requires_runtime_streamlit_url():
