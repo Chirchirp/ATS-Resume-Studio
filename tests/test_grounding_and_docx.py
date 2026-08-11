@@ -80,7 +80,9 @@ class GroundingAndDocumentTests(unittest.TestCase):
         self.assertIn("results + metric + context", lowered)
         self.assertIn("demonstrate soft skills through observable scope", lowered)
         self.assertIn("consistent professional identity", lowered)
-        self.assertIn("never exceed four pages", lowered)
+        self.assertIn("produce exactly 4 word pages", lowered)
+        self.assertIn("simple resume structure only", lowered)
+        self.assertIn("preserve every candidate-source organization", lowered)
         self.assertNotIn("reasonable to infer", lowered)
         self.assertNotIn("quantify everything", lowered)
 
@@ -94,8 +96,8 @@ class GroundingAndDocumentTests(unittest.TestCase):
             ),
             target_pages=1,
         ).lower()
-        self.assertIn("target one word page", prompt)
-        self.assertIn("450–750 words", prompt)
+        self.assertIn("produce exactly 1 word page", prompt)
+        self.assertIn("400–650 words", prompt)
 
     def test_second_pass_prompts_require_evidence_and_target_genericity(self):
         evidence = (
@@ -269,6 +271,33 @@ Data Analyst | Acme Ltd | 2022 - Present
             str(heading.style.font.color.rgb),
             "17365D",
         )
+
+    def test_docx_inserts_hard_breaks_for_selected_page_target(self):
+        source = """\
+Jane Doe
+jane@example.com
+
+PROFESSIONAL SUMMARY
+Data analyst focused on reliable reporting and decision support.
+
+CORE SKILLS
+- Analytics: SQL | Power BI | Excel
+
+PROFESSIONAL EXPERIENCE
+Senior Analyst | Acme Ltd | 2022 - Present
+- Built weekly SQL reports for management.
+Analyst | Beta Ltd | 2019 - 2022
+- Validated operational data before publication.
+
+EDUCATION
+BSc Statistics | Example University | 2019
+"""
+        payload = make_docx_from_text(source, target_pages=3)
+        document = Document(io.BytesIO(payload))
+        page_breaks = document.element.xpath(".//w:br[@w:type='page']")
+        self.assertEqual(len(page_breaks), 2)
+        self.assertIn("3 page(s)", document.core_properties.comments)
+        self.assertTrue(validate_docx_roundtrip(source, payload).is_safe)
 
     def test_docx_roundtrip_detects_lost_sections_and_content(self):
         source = """\

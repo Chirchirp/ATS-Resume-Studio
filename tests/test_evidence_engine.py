@@ -635,7 +635,7 @@ Train end-users on dashboards and analytical outputs."""
         report = validate_grounded_resume_draft(premium, ledger, JD)
         self.assertTrue(report.is_download_safe, report.issues)
 
-    def test_premium_repair_preserves_additional_candidate_sections(self):
+    def test_premium_repair_keeps_only_simple_competitive_sections(self):
         resume = RESUME + (
             "\nTRAINING & PROFESSIONAL DEVELOPMENT\n"
             "Advanced Data Visualization | 2023\n\n"
@@ -645,6 +645,11 @@ Train end-users on dashboards and analytical outputs."""
             "Data Management Association\n\n"
             "LANGUAGES\n"
             "English | Swahili\n"
+            "\nPROJECTS\n"
+            "Sales Reporting Redesign\n"
+            "- Rebuilt source reporting workflows.\n"
+            "\nCORE LEADERSHIP CAPABILITIES\n"
+            "Team leadership | Executive communication\n"
         )
         ledger = build_evidence_ledger(resume)
         matrix = build_evidence_matrix(JD, ledger)
@@ -656,16 +661,52 @@ Train end-users on dashboards and analytical outputs."""
             target_pages=3,
         )
         visible = strip_generation_annotations(safe)
-        self.assertIn("TRAINING & PROFESSIONAL DEVELOPMENT", visible)
-        self.assertIn("Advanced Data Visualization | 2023", visible)
-        self.assertIn("AWARDS & HONORS", visible)
-        self.assertIn("Operations Insight Award | 2022", visible)
-        self.assertIn("PROFESSIONAL MEMBERSHIPS", visible)
-        self.assertIn("Data Management Association", visible)
-        self.assertIn("LANGUAGES", visible)
-        self.assertIn("English | Swahili", visible)
+        self.assertNotIn("TRAINING & PROFESSIONAL DEVELOPMENT", visible)
+        self.assertNotIn("Advanced Data Visualization | 2023", visible)
+        self.assertNotIn("AWARDS & HONORS", visible)
+        self.assertNotIn("PROFESSIONAL MEMBERSHIPS", visible)
+        self.assertNotIn("LANGUAGES", visible)
+        self.assertNotIn("PROJECTS", visible)
+        self.assertNotIn("CORE LEADERSHIP CAPABILITIES", visible)
         report = validate_grounded_resume_draft(safe, ledger, JD)
         self.assertTrue(report.is_download_safe, report.issues)
+
+    def test_every_source_organization_is_retained_in_source_order(self):
+        resume = """Jane Doe
+jane@example.com
+
+EXPERIENCE
+Senior Analyst | Alpha Ltd | 2022 - Present
+- Built SQL reporting workflows.
+Analyst | Beta Ltd | 2019 - 2022
+- Validated operational reports.
+Assistant | Gamma Ltd | 2017 - 2019
+
+EDUCATION
+BSc Statistics | Example University | 2017
+"""
+        ledger = build_evidence_ledger(resume)
+        matrix = build_evidence_matrix(JD, ledger)
+        plans = allocate_role_bullet_targets(
+            ledger,
+            matrix,
+            preferred_per_role=6,
+            target_pages=1,
+        )
+        self.assertEqual(
+            [plan.role_header for plan in plans],
+            [role.header for role in ledger.profile.roles],
+        )
+        safe = strip_generation_annotations(
+            build_safe_evidence_resume(
+                ledger,
+                JD,
+                plans,
+                target_pages=1,
+            )
+        )
+        positions = [safe.index(role.header) for role in ledger.profile.roles]
+        self.assertEqual(positions, sorted(positions))
 
 
 if __name__ == "__main__":

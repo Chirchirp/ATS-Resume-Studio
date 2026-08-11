@@ -304,20 +304,20 @@ def build_grounded_resume_prompt(
     target_pages = max(1, min(4, int(target_pages)))
     length_guidance = {
         1: (
-            "Target one Word page and approximately 450–750 words. Prioritize only the "
-            "strongest verified evidence and never shrink readability to force content."
+            "Produce exactly 1 Word page and approximately 400–650 words. Prioritize only "
+            "the strongest verified evidence and never shrink readability to force content."
         ),
         2: (
-            "Target up to 2 Word pages and approximately 750–1,150 words. Keep role "
-            "coverage concise and never pad weak or repetitive content."
+            "Produce exactly 2 Word pages and approximately 650–950 words. Keep every "
+            "source role, but compress older roles and remove repetition."
         ),
         3: (
-            "Target approximately 3 Word pages and 1,100–1,600 words. Use fewer words "
-            "when the verified evidence does not justify three full pages."
+            "Produce exactly 3 Word pages and approximately 900–1,250 words. Preserve "
+            "every source role in source order and use concise, selective bullets."
         ),
         4: (
-            "Target up to 4 Word pages and approximately 1,500–2,100 words. Never exceed "
-            "four pages and never pad weak or repetitive content."
+            "Produce exactly 4 Word pages and approximately 1,200–1,600 words. Preserve "
+            "every source role, and never pad with weak, generic, or repetitive content."
         ),
     }[target_pages]
     return (
@@ -355,15 +355,18 @@ def build_grounded_resume_prompt(
         "source role and qualification required by the role plan. Cut repetition, not history.\n"
         "- Improve the candidate's existing story; do not replace it with a generic "
         "job-description-shaped template.\n"
-        "- Preserve the candidate's exact role, employer, location, and date chronology.\n"
+        "- Preserve every candidate-source organization and its exact role, employer, "
+        "location, and date header in the same order as the source. Never merge or omit an "
+        "older organization to improve relevance or meet the page target.\n"
         "- When the ledger contains education or certification records, include every "
         "record exactly. Do not rename, upgrade, complete, consolidate, or re-date them.\n"
-        "- Include PROFESSIONAL SUMMARY, PROFESSIONAL EXPERIENCE, and CORE SKILLS. "
-        "Include EDUCATION, CERTIFICATIONS, and PROJECTS whenever their source records "
-        "exist; never omit a supplied qualification to save space.\n"
-        "- Preserve supplied achievements, training, awards, languages, memberships, "
-        "publications, volunteer work, interests, and references under their own standard "
-        "headings; do not absorb them into another section or silently discard them.\n"
+        "- Use a deliberately simple resume structure only: PROFESSIONAL SUMMARY, CORE "
+        "SKILLS, PROFESSIONAL EXPERIENCE, EDUCATION, and CERTIFICATIONS. Omit a heading "
+        "when the source has no record for it.\n"
+        "- Do not create PROJECTS, TRAINING & PROFESSIONAL DEVELOPMENT, CORE LEADERSHIP "
+        "CAPABILITIES, KEY ACHIEVEMENTS, AWARDS, LANGUAGES, MEMBERSHIPS, PUBLICATIONS, "
+        "VOLUNTEERING, INTERESTS, REFERENCES, or any other extra section. Relevant source "
+        "evidence may inform a role bullet or skill only when it is already supported.\n"
         "- Write a substantive PROFESSIONAL SUMMARY, not a tagline. For established or "
         "multi-role career histories, use 3-5 concise sentences covering professional "
         "identity, demonstrated scope, source-backed capabilities, and distinctive "
@@ -490,6 +493,12 @@ def build_resume_refinement_prompt(
         "per role, and remove repetitive or template-shaped prose.\n"
         "12. F-pattern: keep titles and keywords early, use physical bullets for every "
         "skill category and contribution, and keep all sections easy to find.\n\n"
+        "13. Keep every source organization and exact role header in source order. Do not "
+        "merge or drop older employment.\n"
+        "14. Keep only PROFESSIONAL SUMMARY, CORE SKILLS, PROFESSIONAL EXPERIENCE, "
+        "EDUCATION, and CERTIFICATIONS. Remove projects, training/professional development, "
+        "leadership capability, achievement, award, language, membership, publication, "
+        "volunteer, interest, reference, and other extra sections.\n\n"
         "Deterministic audit findings to correct:\n<audit_findings>\n"
         + (deterministic_findings or "No machine-detected issue; still complete the checklist.")
         + "\n</audit_findings>\n\n"

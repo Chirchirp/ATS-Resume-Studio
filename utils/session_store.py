@@ -30,6 +30,8 @@ MAX_SNAPSHOT_BYTES = 3_000_000
 RECOVERABLE_KEYS = (
     "jd",
     "resume",
+    "jd_raw",
+    "resume_raw",
     "inferred_field",
     "last_analysis",
     "premium_tools_output",
@@ -299,6 +301,12 @@ def restore_workspace(state: MutableMapping[str, Any], store: WorkspaceStore | N
     for key, value in snapshot["state"].items():
         if key in RECOVERABLE_KEYS and key not in state:
             state[key] = value
+    # Streamlit widgets own their keyed values. Hydrate those keys before the
+    # Analyze tab renders, otherwise blank widgets overwrite the restored
+    # canonical resume/JD values during the same rerun.
+    for canonical_key, widget_key in (("resume", "resume_raw"), ("jd", "jd_raw")):
+        if widget_key not in state and canonical_key in state:
+            state[widget_key] = state[canonical_key]
     state["_workspace_restored"] = True
     state["workspace_last_saved_at"] = int(snapshot.get("saved_at", 0))
     return True
