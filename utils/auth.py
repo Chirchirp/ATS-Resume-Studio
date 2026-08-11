@@ -17,7 +17,7 @@ import streamlit as st
 
 from platform_api.security import TokenSigner
 from utils.browser_storage import browser_storage
-from utils.session_store import session_secret
+from utils.session_store import WorkspaceStore, session_secret
 
 
 DEFAULT_LOGIN_USERNAME = "Modern Resume AI Agent"
@@ -98,6 +98,48 @@ def verify_persistent_login(token: str) -> str | None:
     return claims.user_id
 
 
+def _browser_fingerprint() -> str:
+    """HMAC Streamlit's own XSRF browser cookie; never use IP alone."""
+    try:
+        cookies = dict(st.context.cookies)
+        headers = st.context.headers
+    except Exception:
+        return ""
+    xsrf_value = next(
+        (
+            str(value)
+            for name, value in cookies.items()
+            if "xsrf" in str(name).casefold() and str(value).strip()
+        ),
+        "",
+    )
+    if not xsrf_value:
+        return ""
+    user_agent = str(headers.get("User-Agent", ""))
+    material = f"{xsrf_value}|{user_agent}".encode("utf-8")
+    return hmac.new(
+        session_secret().encode("utf-8"),
+        material,
+        hashlib.sha256,
+    ).hexdigest()
+
+
+def _restore_server_grant() -> bool:
+    fingerprint = _browser_fingerprint()
+    if not fingerprint:
+        return False
+    try:
+        workspace_id = WorkspaceStore().load_browser_grant(fingerprint)
+    except (OSError, ValueError):
+        return False
+    if not workspace_id:
+        return False
+    st.session_state["auth_authenticated"] = True
+    st.session_state["auth_workspace_id"] = workspace_id
+    st.session_state["auth_restored_from_server_grant"] = True
+    return True
+
+
 def _restore_browser_login() -> bool:
     try:
         token = browser_storage(
@@ -119,6 +161,16 @@ def _restore_browser_login() -> bool:
 def _remember_login() -> None:
     token, workspace_id = issue_persistent_login()
     st.session_state["auth_workspace_id"] = workspace_id
+    fingerprint = _browser_fingerprint()
+    if fingerprint:
+        try:
+            WorkspaceStore().save_browser_grant(
+                fingerprint,
+                workspace_id,
+                int(time.time()) + AUTH_SESSION_TTL_SECONDS,
+            )
+        except (OSError, ValueError):
+            pass
     try:
         browser_storage(
             "set",
@@ -319,6 +371,8 @@ def render_login_gate() -> bool:
     if st.session_state.get("auth_authenticated", False):
         st.session_state.pop("auth_login_pending", None)
         return True
+    if _restore_server_grant():
+        return True
     if _restore_browser_login():
         return True
 
@@ -431,6 +485,12 @@ def render_login_gate() -> bool:
 
 def logout() -> None:
     """Clear sensitive session values and return to the login screen."""
+    fingerprint = _browser_fingerprint()
+    if fingerprint:
+        try:
+            WorkspaceStore().revoke_browser_grant(fingerprint)
+        except (OSError, ValueError):
+            pass
     try:
         browser_storage(
             "remove",
