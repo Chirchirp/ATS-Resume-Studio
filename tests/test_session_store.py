@@ -47,6 +47,8 @@ def test_encrypted_workspace_roundtrip_and_clear(tmp_path: Path):
     assert restore_workspace(restored, store)
     assert restored["resume"] == "Private resume"
     assert restored["jd"] == "Private JD"
+    assert restored["resume_raw"] == "Private resume"
+    assert restored["jd_raw"] == "Private JD"
 
     clear_saved_workspace(restored, store)
     fresh = {
