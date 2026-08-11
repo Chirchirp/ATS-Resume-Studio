@@ -8,7 +8,7 @@ from collections import Counter
 from dataclasses import dataclass
 
 from docx import Document
-from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_BREAK
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Inches, Pt, RGBColor
@@ -118,6 +118,51 @@ def _section_key(line: str) -> str | None:
     return canonical_resume_section(line)
 
 
+def _page_break_line_indices(lines: list[str], target_pages: int) -> set[int]:
+    """Choose natural, deterministic break points for an exact page target."""
+    pages = max(1, min(4, int(target_pages)))
+    nonblank = [index for index, line in enumerate(lines) if line.strip()]
+    if pages == 1 or len(nonblank) < pages:
+        return set()
+
+    cumulative: dict[int, float] = {}
+    total = 0.0
+    for index in nonblank:
+        line = lines[index].strip()
+        words = max(1, len(line.split()))
+        weight = max(1.0, words / 11)
+        if _section_key(line):
+            weight += 0.8
+        elif BULLET_PREFIX_RE.match(line):
+            weight += 0.35
+        total += weight
+        cumulative[index] = total
+
+    natural = [
+        index
+        for index in nonblank[1:]
+        if _section_key(lines[index].strip())
+        or ("|" in lines[index] and not BULLET_PREFIX_RE.match(lines[index].strip()))
+    ]
+    candidates = natural if len(natural) >= pages - 1 else nonblank[1:]
+    selected: list[int] = []
+    for page_number in range(1, pages):
+        desired = total * page_number / pages
+        remaining_breaks = pages - page_number - 1
+        eligible = [
+            index
+            for index in candidates
+            if (not selected or index > selected[-1])
+            and sum(value > index for value in candidates) >= remaining_breaks
+        ]
+        if not eligible:
+            break
+        selected.append(
+            min(eligible, key=lambda index: abs(cumulative[index] - desired))
+        )
+    return set(selected)
+
+
 def _next_numbering_id(numbering, tag: str, attribute: str) -> int:
     values = []
     for element in numbering.findall(qn(tag)):
@@ -212,7 +257,12 @@ def _style_pipe_record(paragraph, line: str):
         run.font.color.rgb = RGBColor.from_string(NAVY if index == 0 else BODY)
 
 
-def make_docx_from_text(text: str, name: str = "") -> bytes:
+def make_docx_from_text(
+    text: str,
+    name: str = "",
+    *,
+    target_pages: int = 1,
+) -> bytes:
     """
     Convert plain / lightly-marked-up resume text into a polished DOCX.
 
@@ -222,6 +272,8 @@ def make_docx_from_text(text: str, name: str = "") -> bytes:
     doc = Document()
     doc.core_properties.title = "ATS-Optimized Resume"
     doc.core_properties.subject = "Single-column ATS-readable professional resume"
+    target_pages = max(1, min(4, int(target_pages)))
+    doc.core_properties.comments = f"Structured pagination target: {target_pages} page(s)"
 
     # Named design override: compact_reference_guide -> ats_resume_single_column.
     # The narrower 0.72" margins keep two-page resumes concise while all content
@@ -264,6 +316,7 @@ def make_docx_from_text(text: str, name: str = "") -> bytes:
     name_written = False
 
     lines = text.splitlines()
+    page_break_indices = _page_break_line_indices(lines, target_pages)
     i = 0
     in_core_skills = False
 
@@ -273,6 +326,10 @@ def make_docx_from_text(text: str, name: str = "") -> bytes:
         if not line:
             i += 1
             continue
+
+        if i in page_break_indices:
+            page_break = doc.add_paragraph()
+            page_break.add_run().add_break(WD_BREAK.PAGE)
 
         normalized_plain = re.sub(r"\*\*", "", line).strip()
         if (

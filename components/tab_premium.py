@@ -326,6 +326,7 @@ def _run_ai_truth_repair(
         ledger,
         matrix,
         preferred_per_role=preferred_bullets,
+        target_pages=rout.get("target_pages", 3),
     )
     grounding = compact_grounding_context(ledger, matrix)
     current_annotated = rout.get("annotated_resume") or repair_grounded_resume_draft(
@@ -745,11 +746,11 @@ def _render_resume_gen(prefs: dict):
                 if pages == 1
                 else f"{pages} pages"
                 if pages < 4
-                else "4 pages maximum"
+                else "4 pages"
             ),
             help=(
-                "The generator respects this ceiling without padding. Actual pagination "
-                "depends on verified evidence and the final Word layout."
+                "The Word export uses the selected count as a hard pagination target. "
+                "Every source organization remains listed; bullet density adjusts to fit."
             ),
         )
         available_strategies = st.session_state.get("positioning_strategies", [])
@@ -814,6 +815,7 @@ def _render_resume_gen(prefs: dict):
             current_ledger,
             current_matrix,
             preferred_per_role=preferred_bullets,
+            target_pages=existing_rout.get("target_pages", 3),
         )
         safe_annotated = build_safe_evidence_resume(
             current_ledger,
@@ -882,6 +884,7 @@ def _render_resume_gen(prefs: dict):
             ledger,
             matrix,
             preferred_per_role=preferred_bullets,
+            target_pages=target_pages,
         )
         domain = infer_domain_context(st.session_state["jd"] + "\n" + user_resume)
         strategies = available_strategies or build_positioning_strategies(
@@ -1232,6 +1235,7 @@ def _render_resume_gen(prefs: dict):
                     current_ledger,
                     current_matrix,
                     preferred_per_role=preferred_bullets,
+                    target_pages=rout.get("target_pages", 3),
                 )
                 annotated_resume = repair_grounded_resume_draft(
                     rout.get("resume", ""),
@@ -1319,7 +1323,6 @@ def _render_resume_gen(prefs: dict):
                 "PROFESSIONAL EXPERIENCE",
                 "EDUCATION",
                 "CERTIFICATIONS",
-                "PROJECTS",
             )
             if label in visible_upper
         ]
@@ -1327,6 +1330,9 @@ def _render_resume_gen(prefs: dict):
             st.caption(
                 "Premium structure retained: " + " · ".join(retained_sections)
             )
+        st.caption(
+            f"Word pagination target: exactly {rout.get('target_pages', 3)} page(s)."
+        )
         summary_match = re.search(
             r"(?ims)^PROFESSIONAL SUMMARY\s*$\s*(.*?)"
             r"(?=^(?:CORE SKILLS|PROFESSIONAL EXPERIENCE|EDUCATION|"
@@ -1638,6 +1644,7 @@ def _render_resume_gen(prefs: dict):
                     current_ledger,
                     current_matrix,
                     preferred_per_role=preferred_bullets,
+                    target_pages=rout.get("target_pages", 3),
                 )
                 edited_annotated = repair_grounded_resume_draft(
                     edited_resume,
@@ -1690,7 +1697,9 @@ def _render_resume_gen(prefs: dict):
 
         # Downloads
         docx_bytes = make_docx_from_text(
-            rout.get("resume", ""), name=rout.get("candidate_name", "")
+            rout.get("resume", ""),
+            name=rout.get("candidate_name", ""),
+            target_pages=rout.get("target_pages", 3),
         )
         docx_parse = validate_docx_roundtrip(
             rout.get("resume", ""), docx_bytes

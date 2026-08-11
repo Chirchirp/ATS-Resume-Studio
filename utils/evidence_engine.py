@@ -1286,13 +1286,14 @@ def allocate_role_bullet_targets(
     preferred_per_role: int = 4,
     minimum_per_role: int = 1,
     maximum_per_role: int = 6,
+    target_pages: int | None = None,
 ) -> tuple[RoleBulletPlan, ...]:
     """Distribute a finite bullet budget fairly across parsed source roles.
 
-    Every role with usable evidence receives a baseline allocation before extra
-    bullets are assigned. Remaining capacity is distributed in round-robin
-    order, prioritising roles with stronger JD coverage without starving older
-    or less directly aligned roles.
+    Every source role is retained in order. Roles with usable evidence receive a
+    baseline allocation before extra bullets are assigned; header-only source
+    roles remain visible with a zero target. Remaining capacity is distributed
+    in round-robin order without starving older or less aligned organizations.
     """
     if not ledger.profile or not ledger.profile.roles:
         return ()
@@ -1320,11 +1321,10 @@ def allocate_role_bullet_targets(
         if row.status in {"direct", "equivalent", "transferable"}
         for evidence_id in row.evidence_ids
     }
-    roles = [
-        role
-        for role in ledger.profile.roles
-        if role_items.get(role.id)
-    ]
+    # Keep every parsed source organization in its original order. A role with
+    # no usable responsibility line still receives a zero-bullet header rather
+    # than disappearing from the candidate's employment history.
+    roles = list(ledger.profile.roles)
     if not roles:
         return ()
 
@@ -1334,6 +1334,14 @@ def allocate_role_bullet_targets(
     }
     total_available = sum(len(role_items[role.id]) for role in roles)
     total_budget = min(total_available, preferred * len(roles))
+    if target_pages is not None:
+        pages = max(1, min(4, int(target_pages)))
+        # Summary, skills and qualifications consume roughly one third of a
+        # page. Keep a concise, predictable contribution budget while retaining
+        # at least one bullet for every role that has evidence.
+        page_budget = {1: 5, 2: 9, 3: 14, 4: 19}[pages]
+        evidenced_roles = sum(bool(role_items[role.id]) for role in roles)
+        total_budget = min(total_budget, max(evidenced_roles, page_budget))
     relevance = {
         role.id: sum(item.id in relevant_ids for item in role_items[role.id])
         for role in roles
@@ -2001,6 +2009,45 @@ def _sectioned_resume(text: str) -> tuple[list[str], dict[str, list[str]], list[
     return prefix, sections, order
 
 
+_SIMPLE_RESUME_SECTIONS = {
+    "summary",
+    "skills",
+    "experience",
+    "education",
+    "certifications",
+}
+_EXPLICIT_EXTRA_HEADINGS = {
+    "core leadership capabilities",
+    "leadership capabilities",
+    "leadership competencies",
+    "selected leadership capabilities",
+}
+
+
+def _keep_simple_resume_sections(text: str) -> str:
+    """Remove non-standard resume blocks without touching employment records."""
+    kept: list[str] = []
+    skipping = False
+    for raw_line in text.splitlines():
+        clean = re.sub(r"[^a-z0-9]+", " ", raw_line.casefold()).strip()
+        section = _section_heading(raw_line.strip())
+        if clean in _EXPLICIT_EXTRA_HEADINGS or (
+            "leadership" in clean
+            and any(word in clean for word in ("capabilities", "competencies"))
+            and len(clean.split()) <= 6
+        ):
+            skipping = True
+            continue
+        if section:
+            skipping = section not in _SIMPLE_RESUME_SECTIONS
+            if not skipping:
+                kept.append(raw_line)
+            continue
+        if not skipping:
+            kept.append(raw_line)
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(kept)).strip()
+
+
 def enhance_resume_core_sections(
     generated_text: str,
     ledger: EvidenceLedger,
@@ -2016,6 +2063,7 @@ def enhance_resume_core_sections(
     if not profile:
         return generated_text
     target_pages = max(1, min(4, int(target_pages)))
+    generated_text = _keep_simple_resume_sections(generated_text)
     prefix, sections, original_order = _sectioned_resume(generated_text)
     source_prefix = [profile.candidate_name] if profile.candidate_name else []
     source_prefix.extend(
@@ -2076,64 +2124,23 @@ def enhance_resume_core_sections(
         sections["certifications"] = certifications
     else:
         sections.pop("certifications", None)
-    additional_sections = (
-        "training",
-        "awards",
-        "languages",
-        "memberships",
-        "publications",
-        "volunteering",
-        "achievements",
-        "references",
-        "interests",
-    )
-    for section in additional_sections:
-        records = [
-            line.strip()
-            for line in profile.sections.get(section, "").splitlines()
-            if line.strip()
-        ]
-        if records:
-            sections[section] = records
-        else:
-            sections.pop(section, None)
-
     canonical_order = [
         "summary",
         "skills",
         "experience",
-        "projects",
-        "achievements",
         "education",
         "certifications",
-        "training",
-        "awards",
-        "memberships",
-        "publications",
-        "volunteering",
-        "languages",
-        "interests",
-        "references",
     ]
-    ordered = canonical_order + [
-        section for section in original_order if section not in canonical_order
-    ]
+    sections = {
+        key: value for key, value in sections.items() if key in canonical_order
+    }
+    ordered = canonical_order
     headings = {
         "summary": "PROFESSIONAL SUMMARY",
         "skills": "CORE SKILLS",
         "experience": "PROFESSIONAL EXPERIENCE",
-        "projects": "PROJECTS",
         "education": "EDUCATION",
         "certifications": "CERTIFICATIONS",
-        "training": "TRAINING & PROFESSIONAL DEVELOPMENT",
-        "awards": "AWARDS & HONORS",
-        "languages": "LANGUAGES",
-        "memberships": "PROFESSIONAL MEMBERSHIPS",
-        "publications": "PUBLICATIONS",
-        "volunteering": "VOLUNTEER EXPERIENCE",
-        "achievements": "KEY ACHIEVEMENTS",
-        "references": "REFERENCES",
-        "interests": "INTERESTS",
     }
     blocks = ["\n".join(prefix).strip()]
     for section in ordered:
@@ -2155,7 +2162,11 @@ def build_safe_evidence_resume(
     if not profile:
         return ""
     matrix = build_evidence_matrix(jd_text, ledger)
-    plans = role_plans or allocate_role_bullet_targets(ledger, matrix)
+    plans = role_plans or allocate_role_bullet_targets(
+        ledger,
+        matrix,
+        target_pages=target_pages,
+    )
     lines: list[str] = []
     if profile.candidate_name:
         lines.append(profile.candidate_name)
@@ -2211,43 +2222,6 @@ def build_safe_evidence_resume(
                 *certification_lines,
             ]
         )
-    additional_headings = {
-        "training": "TRAINING & PROFESSIONAL DEVELOPMENT",
-        "awards": "AWARDS & HONORS",
-        "languages": "LANGUAGES",
-        "memberships": "PROFESSIONAL MEMBERSHIPS",
-        "publications": "PUBLICATIONS",
-        "volunteering": "VOLUNTEER EXPERIENCE",
-        "achievements": "KEY ACHIEVEMENTS",
-        "references": "REFERENCES",
-        "interests": "INTERESTS",
-    }
-    for section, heading in additional_headings.items():
-        records = [
-            line.strip()
-            for line in profile.sections.get(section, "").splitlines()
-            if line.strip()
-        ]
-        if records:
-            tail.extend(["", heading, *records])
-    if profile.projects:
-        tail.extend(["", "PROJECTS"])
-        for project in profile.projects:
-            tail.append(project.title)
-            project_items = [
-                item
-                for item in ledger.items
-                if item.role_id == project.id and item.section == "projects"
-            ]
-            for item in project_items:
-                tail.extend(
-                    _canonical_bullet_block(
-                        item.text,
-                        item,
-                        matrix,
-                        use_source_wording=True,
-                    )
-                )
     safe_resume = re.sub(
         r"\n{3,}", "\n\n", seed + "\n" + "\n".join(tail)
     ).strip()
@@ -2435,6 +2409,40 @@ def validate_grounded_resume_draft(
             if item.role
         }
     )
+    if ledger.profile and ledger.profile.roles:
+        visible_role_lines = [
+            _normalized_fact_line(line)
+            for line in visible_text.splitlines()
+            if ROLE_RE.search(line)
+        ]
+        last_position = -1
+        for role_index, role in enumerate(ledger.profile.roles, start=1):
+            expected = _normalized_fact_line(role.header)
+            try:
+                position = visible_role_lines.index(expected)
+            except ValueError:
+                report.issues.append(
+                    ClaimIssue(
+                        f"ROLE{role_index:03d}",
+                        "high",
+                        "missing_source_role",
+                        role.header,
+                        "Every candidate-source organization must appear in Professional "
+                        "Experience with its exact role header.",
+                    )
+                )
+                continue
+            if position <= last_position:
+                report.issues.append(
+                    ClaimIssue(
+                        f"ROLE{role_index:03d}",
+                        "high",
+                        "source_role_order_mismatch",
+                        role.header,
+                        "Professional Experience must preserve the source organization order.",
+                    )
+                )
+            last_position = position
     source_section_lines = {
         section: {
             _normalized_fact_line(item.text)
