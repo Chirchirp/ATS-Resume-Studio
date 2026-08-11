@@ -58,6 +58,7 @@ OUTPUT_STRING_KEYS = {
     "strategy_id",
     "strategy_name",
     "domain",
+    "structure_policy_version",
     "letter",
     "answer",
     "tone",

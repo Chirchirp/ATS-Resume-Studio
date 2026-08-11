@@ -1339,7 +1339,7 @@ def allocate_role_bullet_targets(
         # Summary, skills and qualifications consume roughly one third of a
         # page. Keep a concise, predictable contribution budget while retaining
         # at least one bullet for every role that has evidence.
-        page_budget = {1: 5, 2: 9, 3: 14, 4: 19}[pages]
+        page_budget = {1: 4, 2: 7, 3: 11, 4: 15}[pages]
         evidenced_roles = sum(bool(role_items[role.id]) for role in roles)
         total_budget = min(total_budget, max(evidenced_roles, page_budget))
     relevance = {
@@ -2021,6 +2021,12 @@ _EXPLICIT_EXTRA_HEADINGS = {
     "leadership capabilities",
     "leadership competencies",
     "selected leadership capabilities",
+    "selected ai automation architecture portfolio",
+    "selected ai automation and architecture portfolio",
+    "ai automation architecture portfolio",
+    "leadership delivery approach",
+    "leadership and delivery approach",
+    "technical environment",
 }
 
 

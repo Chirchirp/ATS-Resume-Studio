@@ -83,6 +83,8 @@ class GroundingAndDocumentTests(unittest.TestCase):
         self.assertIn("produce exactly 4 word pages", lowered)
         self.assertIn("simple resume structure only", lowered)
         self.assertIn("preserve every candidate-source organization", lowered)
+        self.assertIn("never infer a school or college", lowered)
+        self.assertIn("technical environment", lowered)
         self.assertNotIn("reasonable to infer", lowered)
         self.assertNotIn("quantify everything", lowered)
 
