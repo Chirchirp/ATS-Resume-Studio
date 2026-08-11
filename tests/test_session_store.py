@@ -18,6 +18,12 @@ def test_snapshot_excludes_all_credentials():
             "provider_api_keys": {"groq": "gsk_must_not_be_saved"},
             "premium_resume_output": {
                 "resume": "Generated resume",
+                "alignment_gate": {
+                    "original_score": 72,
+                    "accepted_score": 76,
+                    "delta": 4,
+                    "passed": True,
+                },
                 "validation": {"token": "not persisted"},
             },
         }
@@ -25,6 +31,7 @@ def test_snapshot_excludes_all_credentials():
     serialized = str(snapshot)
     assert "Candidate resume" in serialized
     assert "Generated resume" in serialized
+    assert snapshot["state"]["premium_resume_output"]["alignment_gate"]["passed"]
     assert "gsk_must_not_be_saved" not in serialized
     assert "validation" not in snapshot["state"]["premium_resume_output"]
 

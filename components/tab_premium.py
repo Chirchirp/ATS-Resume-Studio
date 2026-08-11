@@ -3,6 +3,7 @@ components/tab_premium.py — Premium Solutions tab: resume gen, cover letter, r
 """
 
 import re
+from dataclasses import replace
 
 import streamlit as st
 
@@ -21,7 +22,12 @@ from prompts.templates import (
     get_recruiter_system_prompt,
 )
 from utils.ai_runtime import resume_output_limit, run_ai, user_safe_ai_error
-from utils.ats_engine import AlignmentReport, analyze_alignment, top_requirement_text
+from utils.ats_engine import (
+    AlignmentReport,
+    analyze_alignment,
+    extract_alignment_terms,
+    top_requirement_text,
+)
 from utils.docx_builder import make_docx_from_text, validate_docx_roundtrip
 from utils.domain_profiles import (
     deterministic_field_label,
@@ -215,7 +221,211 @@ EVIDENCE_INPUT_ISSUES = {
     "unsupported_certifications_record",
     "verification_placeholder",
 }
-RESUME_STRUCTURE_POLICY_VERSION = "simple_core_v3"
+RESUME_STRUCTURE_POLICY_VERSION = "simple_core_v4"
+
+
+def _source_surface_phrase(term: str, ledger) -> str:
+    """Find the shortest exact candidate-source phrase matching a normalized term."""
+    source_values = []
+    if ledger.profile:
+        source_values.extend(ledger.profile.declared_skills)
+    source_values.extend(item.text for item in ledger.items)
+    best = ""
+    for value in source_values:
+        tokens = re.findall(r"[A-Za-z0-9][A-Za-z0-9+#./'-]*", value)
+        for size in range(1, min(5, len(tokens)) + 1):
+            for index in range(0, len(tokens) - size + 1):
+                phrase = " ".join(tokens[index : index + size])
+                if term not in extract_alignment_terms(phrase):
+                    continue
+                if not best or (len(phrase.split()), len(phrase)) < (
+                    len(best.split()),
+                    len(best),
+                ):
+                    best = phrase
+    return best
+
+
+def _inject_source_keyword_line(
+    annotated_resume: str,
+    phrases: list[str],
+) -> str:
+    """Place exact source phrases in Core Skills without adding a new section."""
+    values = list(dict.fromkeys(value for value in phrases if value))[:12]
+    if not values:
+        return annotated_resume
+    line = "- Role-Relevant Skills: " + " | ".join(values)
+    lines = annotated_resume.splitlines()
+    experience_index = next(
+        (
+            index
+            for index, value in enumerate(lines)
+            if value.strip().upper() == "PROFESSIONAL EXPERIENCE"
+        ),
+        len(lines),
+    )
+    skills_index = next(
+        (
+            index
+            for index, value in enumerate(lines[:experience_index])
+            if value.strip().upper() == "CORE SKILLS"
+        ),
+        None,
+    )
+    if skills_index is None:
+        insertion = ["CORE SKILLS", line, ""]
+        lines[experience_index:experience_index] = insertion
+    else:
+        lines[experience_index:experience_index] = [line, ""]
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
+
+
+def _apply_alignment_no_regression_gate(
+    annotated_resume: str,
+    ledger,
+    *,
+    source_resume: str,
+    jd_text: str,
+    role_plans,
+    target_pages: int,
+) -> tuple[str, ClaimValidationReport, tuple, dict]:
+    """Recover supported coverage until the optimized score meets the source score."""
+    original_alignment = analyze_alignment(jd_text, source_resume)
+    visible = clean_resume_output(strip_generation_annotations(annotated_resume))
+    current_alignment = analyze_alignment(jd_text, visible)
+    current_validation = validate_grounded_resume_draft(
+        annotated_resume,
+        ledger,
+        jd_text,
+    )
+    best = (
+        current_alignment.score,
+        annotated_resume,
+        current_validation,
+        role_plans,
+    )
+    if (
+        current_validation.is_download_safe
+        and current_alignment.score >= original_alignment.score
+    ):
+        return (
+            annotated_resume,
+            current_validation,
+            role_plans,
+            {
+                "original_score": original_alignment.score,
+                "accepted_score": current_alignment.score,
+                "delta": current_alignment.score - original_alignment.score,
+                "passed": True,
+                "recovered_terms": (),
+            },
+        )
+    lost_terms = sorted(
+        set(original_alignment.matched_terms) - set(current_alignment.matched_terms)
+    )
+    priority_items = [
+        item
+        for item in ledger.items
+        if item.section == "experience"
+        and item.role_id
+        and set(item.terms).intersection(lost_terms)
+    ]
+    priority_ids = tuple(item.id for item in priority_items)
+    priority_by_role: dict[str, int] = {}
+    for item in priority_items:
+        priority_by_role[item.role_id] = priority_by_role.get(item.role_id, 0) + 1
+
+    adjusted_plans = tuple(
+        replace(
+            plan,
+            target=max(
+                plan.target,
+                min(plan.available, priority_by_role.get(plan.role_id, 0)),
+            ),
+        )
+        for plan in role_plans
+    )
+    source_phrases = [
+        _source_surface_phrase(term, ledger)
+        for term in lost_terms
+    ]
+
+    # Try the targeted recovery first, then add source bullets one at a time.
+    # Stop as soon as the source score is met; never add more than six per role.
+    plan_variants = [adjusted_plans]
+    expanded = adjusted_plans
+    expansion_limit = sum(
+        max(0, min(6, plan.available) - plan.target) for plan in expanded
+    )
+    for _ in range(expansion_limit):
+        expandable = [
+            plan
+            for plan in expanded
+            if plan.target < min(6, plan.available)
+        ]
+        if not expandable:
+            break
+        chosen = max(
+            expandable,
+            key=lambda plan: (
+                priority_by_role.get(plan.role_id, 0),
+                plan.relevance_hits,
+                -plan.target,
+            ),
+        )
+        expanded = tuple(
+            replace(plan, target=plan.target + 1)
+            if plan.role_id == chosen.role_id
+            else plan
+            for plan in expanded
+        )
+        plan_variants.append(expanded)
+
+    for plans in plan_variants:
+        candidate = repair_grounded_resume_draft(
+            annotated_resume,
+            ledger,
+            jd_text,
+            plans,
+            priority_evidence_ids=priority_ids,
+        )
+        candidate = enhance_resume_core_sections(
+            candidate,
+            ledger,
+            target_pages=target_pages,
+        )
+        candidate = repair_grounded_resume_draft(
+            candidate,
+            ledger,
+            jd_text,
+            plans,
+            priority_evidence_ids=priority_ids,
+        )
+        candidate = _inject_source_keyword_line(candidate, source_phrases)
+        validation = validate_grounded_resume_draft(candidate, ledger, jd_text)
+        if not validation.is_download_safe:
+            continue
+        candidate_visible = clean_resume_output(
+            strip_generation_annotations(candidate)
+        )
+        candidate_alignment = analyze_alignment(jd_text, candidate_visible)
+        if candidate_alignment.score > best[0]:
+            best = (candidate_alignment.score, candidate, validation, plans)
+        if candidate_alignment.score >= original_alignment.score:
+            best = (candidate_alignment.score, candidate, validation, plans)
+            break
+
+    accepted_score, accepted, validation, accepted_plans = best
+    gate = {
+        "original_score": original_alignment.score,
+        "accepted_score": accepted_score,
+        "delta": accepted_score - original_alignment.score,
+        "passed": accepted_score >= original_alignment.score,
+        "recovered_terms": tuple(
+            value for value in source_phrases if value
+        ),
+    }
+    return accepted, validation, accepted_plans, gate
 
 
 def _truth_issue_action(issue_type: str) -> tuple[str, bool]:
@@ -357,6 +567,16 @@ def _apply_strict_resume_policy(
             target_pages=target_pages,
         )
         validation = validate_grounded_resume_draft(annotated, ledger, jd_text)
+    annotated, validation, role_plans, alignment_gate = (
+        _apply_alignment_no_regression_gate(
+            annotated,
+            ledger,
+            source_resume=st.session_state.get("resume", ""),
+            jd_text=jd_text,
+            role_plans=role_plans,
+            target_pages=target_pages,
+        )
+    )
     visible = clean_resume_output(strip_generation_annotations(annotated))
     updated = dict(rout)
     updated.update(
@@ -370,6 +590,7 @@ def _apply_strict_resume_policy(
             "role_bullet_plan": role_plans,
             "target_pages": target_pages,
             "structure_policy_version": RESUME_STRUCTURE_POLICY_VERSION,
+            "alignment_gate": alignment_gate,
         }
     )
     st.session_state["premium_resume_output"] = updated
@@ -1234,6 +1455,20 @@ def _render_resume_gen(prefs: dict):
                 resume_draft = safe_draft
                 validation = safe_validation
                 review_pass = "automatic_premium_safe_recovery"
+        resume_draft, validation, role_plans, alignment_gate = (
+            _apply_alignment_no_regression_gate(
+                resume_draft,
+                ledger,
+                source_resume=user_resume,
+                jd_text=st.session_state["jd"],
+                role_plans=role_plans,
+                target_pages=target_pages,
+            )
+        )
+        if alignment_gate["passed"] and alignment_gate["delta"] > 0:
+            review_pass = "alignment_improvement_gate"
+        elif alignment_gate["passed"]:
+            review_pass = "alignment_no_regression_gate"
         achievements = _achievement_examples_from_resume(
             resume_draft, sum(plan.target for plan in role_plans) or preferred_bullets
         )
@@ -1277,6 +1512,7 @@ def _render_resume_gen(prefs: dict):
             "role_bullet_plan": role_plans,
             "target_pages": target_pages,
             "structure_policy_version": RESUME_STRUCTURE_POLICY_VERSION,
+            "alignment_gate": alignment_gate,
         }
         st.session_state["ideal_resume"] = ideal_resume
         st.session_state.pop("truth_audit_resume_text", None)
@@ -1350,6 +1586,15 @@ def _render_resume_gen(prefs: dict):
             st.success(
                 "Clean-resume policy applied: unsupported education and non-standard "
                 "sections were removed without another AI call."
+            )
+        elif rout.get("review_pass") == "alignment_improvement_gate":
+            st.success(
+                "Improvement gate passed: the accepted resume scores above the original."
+            )
+        elif rout.get("review_pass") == "alignment_no_regression_gate":
+            st.info(
+                "No-regression gate passed: the accepted resume preserves the original "
+                "alignment score while improving structure and readability."
             )
         elif rout.get("review_pass") == "two_pass_rejected_unsafe_revision":
             st.warning(
@@ -1499,6 +1744,21 @@ def _render_resume_gen(prefs: dict):
         rout["competitive_alignment"] = competitive_alignment
         rout["keyword_xray"] = keyword_xray
         rout["three_stage_audit"] = reading_audit
+        alignment_gate = rout.get("alignment_gate", {})
+        if isinstance(alignment_gate, dict):
+            if alignment_gate.get("passed"):
+                st.success(
+                    "ATS acceptance gate: "
+                    f"{alignment_gate.get('original_score', 0)}% → "
+                    f"{alignment_gate.get('accepted_score', 0)}% "
+                    f"({int(alignment_gate.get('delta', 0)):+d})."
+                )
+            else:
+                st.error(
+                    "ATS acceptance gate failed. This draft is available for review but "
+                    "cannot be downloaded as an improved resume because it scores below "
+                    "the original source. Add verified evidence or regenerate."
+                )
 
         tabs = st.tabs(
             ["📄 Resume Preview", "💡 Achievement Examples", "🛡️ Truth Audit & Edit"]
@@ -1828,7 +2088,13 @@ def _render_resume_gen(prefs: dict):
                 "version currently shown above; resolve any source-change or truth-audit "
                 "warning before using it in an application."
             )
-        download_ready = bool(rout.get("resume", "").strip()) and bool(docx_bytes)
+        gate = rout.get("alignment_gate", {})
+        gate_passed = not isinstance(gate, dict) or bool(gate.get("passed", False))
+        download_ready = (
+            bool(rout.get("resume", "").strip())
+            and bool(docx_bytes)
+            and gate_passed
+        )
         candidate_slug = re.sub(
             r"[^A-Za-z0-9]+",
             "_",

@@ -1596,6 +1596,7 @@ def _replace_experience_section(
     ledger: EvidenceLedger,
     matrix: EvidenceMatrix,
     plans: tuple[RoleBulletPlan, ...],
+    priority_evidence_ids: tuple[str, ...] = (),
 ) -> str:
     if not plans or not ledger.profile:
         return annotated_text
@@ -1634,17 +1635,38 @@ def _replace_experience_section(
 
     section = ["PROFESSIONAL EXPERIENCE"]
     used_evidence: set[str] = set()
+    priority_ids = set(priority_evidence_ids)
     for plan in plans:
         section.extend(["", plan.role_header])
         selected: list[list[str]] = []
-        for block in generated_by_role.get(plan.role_id, []):
-            evidence_id = re.findall(r"\bE\d{3}\b", " ".join(block[1:]))[0]
-            if evidence_id in used_evidence:
-                continue
-            selected.append(block)
-            used_evidence.add(evidence_id)
-            if len(selected) >= plan.target:
-                break
+        generated_blocks = generated_by_role.get(plan.role_id, [])
+        generated_blocks = sorted(
+            generated_blocks,
+            key=lambda block: (
+                re.findall(r"\bE\d{3}\b", " ".join(block[1:]))[0]
+                not in priority_ids
+            ),
+        )
+        missing_priority_count = sum(
+            item.id in priority_ids
+            and item.role_id == plan.role_id
+            and item.section == "experience"
+            and all(
+                item.id not in " ".join(block[1:])
+                for block in generated_blocks
+            )
+            for item in ledger.items
+        )
+        generated_limit = max(0, plan.target - missing_priority_count)
+        if generated_limit:
+            for block in generated_blocks:
+                evidence_id = re.findall(r"\bE\d{3}\b", " ".join(block[1:]))[0]
+                if evidence_id in used_evidence:
+                    continue
+                selected.append(block)
+                used_evidence.add(evidence_id)
+                if len(selected) >= generated_limit:
+                    break
         source_items = [
             item
             for item in ledger.items
@@ -1665,6 +1687,7 @@ def _replace_experience_section(
             )
         source_items.sort(
             key=lambda item: (
+                item.id not in priority_ids,
                 0 if item.metrics else 1,
                 _requirement_for_evidence(item.id, matrix) is None,
                 item.item_type != "bullet",
@@ -1697,6 +1720,7 @@ def repair_grounded_resume_draft(
     ledger: EvidenceLedger,
     jd_text: str,
     role_plans: tuple[RoleBulletPlan, ...] = (),
+    priority_evidence_ids: tuple[str, ...] = (),
 ) -> str:
     """Deterministically repair audit metadata and source-role structure.
 
@@ -1716,6 +1740,7 @@ def repair_grounded_resume_draft(
         ledger,
         matrix,
         role_plans,
+        priority_evidence_ids,
     )
 
 
