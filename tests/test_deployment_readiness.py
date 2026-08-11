@@ -57,9 +57,12 @@ def test_cloudflare_wrapper_has_recoverable_wake_flow_and_fresh_assets():
     assert 'STATUS_ENDPOINT = "/api/streamlit-status"' in script
     assert 'result.status === "ready"' in script
     assert "loadReadyStudio" in script
+    assert '/~/+/' in script
+    assert "FRAME_REVEAL_FALLBACK_MS" in script
+    assert 'window.addEventListener("pageshow"' in script
+    assert 'window.addEventListener("online"' in script
     assert 'stage.dataset.state = "ready"' in script
-    assert 'frame.addEventListener("load"' in script
-    assert 'frame.addEventListener(\n    "load"' not in script
+    assert 'frame.addEventListener(\n      "load"' in script
     assert "setTimeout(revealStudio, 6500)" not in script
     assert 'const STATUS_PATH = "/api/streamlit-status"' in worker
     assert 'contentType.includes("text/plain")' in worker
@@ -70,8 +73,8 @@ def test_cloudflare_wrapper_has_recoverable_wake_flow_and_fresh_assets():
     assert 'pathname === "/styles.css"' in worker
     assert "max-age=604800, immutable" not in worker
     assert "max-age=604800, immutable" not in headers
-    assert 'href="./styles.css?v=20260810-readiness-gate"' in markup
-    assert 'src="./app.js?v=20260810-readiness-gate"' in markup
+    assert 'href="./styles.css?v=20260811-runtime-handoff"' in markup
+    assert 'src="./app.js?v=20260811-runtime-handoff"' in markup
 
 
 def test_cloudflare_wrapper_requires_runtime_streamlit_url():
